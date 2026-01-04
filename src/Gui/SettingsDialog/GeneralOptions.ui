@@ -92,6 +92,11 @@
        <string>Copy file location to clipboard</string>
       </property>
      </item>
+     <item>
+      <property name="text">
+       <string>Copy file URI to clipboard</string>
+      </property>
+     </item>
     </widget>
    </item>
    <item row="4" column="0" colspan="2">

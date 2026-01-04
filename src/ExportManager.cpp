@@ -728,7 +728,8 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
         // This behavior has no relation to the setting in the config UI,
         // but it was added to solve this feature request:
         // https://bugs.kde.org/show_bug.cgi?id=357423
-        || (saved && Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation)) {
+        || (saved
+            && (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri))) {
         if (!url.isValid()) {
             if (m_imageSavedNotInTemp) {
                 // The image has been saved (manually or automatically),
@@ -742,7 +743,13 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
 
         // will be deleted for us by the platform's clipboard manager.
         auto data = new QMimeData();
-        data->setText(url.toLocalFile());
+        // Use URI list format if PostScreenshotCopyLocationUri is selected,
+        // otherwise use raw file path as text
+        if (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri) {
+            data->setUrls({url});
+        } else {
+            data->setText(url.toLocalFile());
+        }
         KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
         success = true;
     }
@@ -875,10 +882,19 @@ void ExportManager::exportVideo(ExportManager::Actions actions, const QUrl &inpu
         // This behavior has no relation to the setting in the config UI,
         // but it was added to solve this feature request:
         // https://bugs.kde.org/show_bug.cgi?id=357423
-        || (saved && Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation)) {
+        || (saved
+            && (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri))) {
         // will be deleted for us by the platform's clipboard manager.
         auto data = new QMimeData();
-        data->setText(outputUrl.isLocalFile() ? outputUrl.toLocalFile() : outputUrl.toString());
+        // Use URI list format if PostScreenshotCopyLocationUri is selected,
+        // otherwise use raw file path as text for local files
+        if (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri) {
+            data->setUrls({outputUrl});
+        } else if (outputUrl.isLocalFile()) {
+            data->setText(outputUrl.toLocalFile());
+        } else {
+            data->setText(outputUrl.toString());
+        }
         KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
         copiedPath = true;
     }

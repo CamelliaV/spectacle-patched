@@ -44,6 +44,7 @@
         <choice name="PostScreenshotDoNothing"></choice>
         <choice name="PostScreenshotCopyImage"></choice>
         <choice name="PostScreenshotCopyLocation"></choice>
+        <choice name="PostScreenshotCopyLocationUri"></choice>
         </choices>
         <default>PostScreenshotDoNothing</default>
     </entry>

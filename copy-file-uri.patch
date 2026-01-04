@@ -1,0 +1,93 @@
+diff --git a/src/ExportManager.cpp b/src/ExportManager.cpp
+index 1b3a9ec9..af712698 100644
+--- a/src/ExportManager.cpp
++++ b/src/ExportManager.cpp
+@@ -727,7 +727,8 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
+         // This behavior has no relation to the setting in the config UI,
+         // but it was added to solve this feature request:
+         // https://bugs.kde.org/show_bug.cgi?id=357423
+-        || (saved && Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation)) {
++        || (saved && (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation
++                      || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri))) {
+         if (!url.isValid()) {
+             if (m_imageSavedNotInTemp) {
+                 // The image has been saved (manually or automatically),
+@@ -741,7 +742,13 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
+
+         // will be deleted for us by the platform's clipboard manager.
+         auto data = new QMimeData();
+-        data->setText(url.toLocalFile());
++        // Use URI list format if PostScreenshotCopyLocationUri is selected,
++        // otherwise use raw file path as text
++        if (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri) {
++            data->setUrls({url});
++        } else {
++            data->setText(url.toLocalFile());
++        }
+         KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
+         success = true;
+     }
+@@ -873,10 +880,19 @@ void ExportManager::exportVideo(ExportManager::Actions actions, const QUrl &inpu
+         // This behavior has no relation to the setting in the config UI,
+         // but it was added to solve this feature request:
+         // https://bugs.kde.org/show_bug.cgi?id=357423
+-        || (saved && Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation)) {
++        || (saved && (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation
++                      || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri))) {
+         // will be deleted for us by the platform's clipboard manager.
+         auto data = new QMimeData();
+-        data->setText(outputUrl.isLocalFile() ? outputUrl.toLocalFile() : outputUrl.toString());
++        // Use URI list format if PostScreenshotCopyLocationUri is selected,
++        // otherwise use raw file path as text for local files
++        if (Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri) {
++            data->setUrls({outputUrl});
++        } else if (outputUrl.isLocalFile()) {
++            data->setText(outputUrl.toLocalFile());
++        } else {
++            data->setText(outputUrl.toString());
++        }
+         KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
+         copiedPath = true;
+     }
+diff --git a/src/Gui/SettingsDialog/GeneralOptions.ui b/src/Gui/SettingsDialog/GeneralOptions.ui
+index 048639b8..b92affeb 100644
+--- a/src/Gui/SettingsDialog/GeneralOptions.ui
++++ b/src/Gui/SettingsDialog/GeneralOptions.ui
+@@ -92,6 +92,11 @@
+        <string>Copy file location to clipboard</string>
+       </property>
+      </item>
++     <item>
++      <property name="text">
++       <string>Copy file URI to clipboard</string>
++      </property>
++     </item>
+     </widget>
+    </item>
+    <item row="4" column="0" colspan="2">
+diff --git a/src/Gui/SettingsDialog/spectacle.kcfg b/src/Gui/SettingsDialog/spectacle.kcfg
+index 6674f986..b262ecfa 100644
+--- a/src/Gui/SettingsDialog/spectacle.kcfg
++++ b/src/Gui/SettingsDialog/spectacle.kcfg
+@@ -40,6 +40,7 @@
+         <choice name="PostScreenshotDoNothing"></choice>
+         <choice name="PostScreenshotCopyImage"></choice>
+         <choice name="PostScreenshotCopyLocation"></choice>
++        <choice name="PostScreenshotCopyLocationUri"></choice>
+         </choices>
+         <default>PostScreenshotDoNothing</default>
+     </entry>
+diff --git a/src/SpectacleCore.cpp b/src/SpectacleCore.cpp
+index 809775f7..26dd06bd 100644
+--- a/src/SpectacleCore.cpp
++++ b/src/SpectacleCore.cpp
+@@ -1315,7 +1315,8 @@ ExportManager::Actions SpectacleCore::autoExportActions() const
+     if (m_startMode != StartMode::Background) {
+         save |= Settings::autoSaveImage();
+         copyImage |= Settings::clipboardGroup() == Settings::PostScreenshotCopyImage && !m_videoMode;
+-        copyPath |= Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation;
++        copyPath |= Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation
++                    || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri;
+     }
+     if (m_startMode == StartMode::Gui) {
+         actions.setFlag(Action::Save, save);

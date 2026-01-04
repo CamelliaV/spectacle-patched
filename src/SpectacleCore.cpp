@@ -1354,7 +1354,7 @@ ExportManager::Actions SpectacleCore::autoExportActions() const
     if (m_startMode != StartMode::Background) {
         save |= Settings::autoSaveImage();
         copyImage |= Settings::clipboardGroup() == Settings::PostScreenshotCopyImage && !m_videoMode;
-        copyPath |= Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation;
+        copyPath |= Settings::clipboardGroup() == Settings::PostScreenshotCopyLocation || Settings::clipboardGroup() == Settings::PostScreenshotCopyLocationUri;
     }
     if (m_startMode == StartMode::Gui) {
         actions.setFlag(Action::Save, save);

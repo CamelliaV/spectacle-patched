@@ -1,3 +1,38 @@
+# Spectacle Patched
+
+A patched version of [KDE Spectacle](https://invent.kde.org/plasma/spectacle) with an additional clipboard option.
+
+## Patch: Copy File URI to Clipboard
+
+This fork adds a new option **"Copy file URI to clipboard"** in Settings > General > After taking a screenshot.
+
+- **Copy file location to clipboard** - Copies raw path: `/home/user/Screenshots/file.png`
+- **Copy file URI to clipboard** (new) - Copies as URI with `text/uri-list` MIME type: `file:///home/user/Screenshots/file.png`
+
+The URI format is recognized by file managers and other applications as a proper file reference.
+
+## Installation (Arch Linux)
+
+```bash
+cd /path/to/this/repo
+makepkg -si
+```
+
+## Updating
+
+When upstream Spectacle updates:
+1. Update `pkgver` in `PKGBUILD`
+2. Run `makepkg -si`
+3. If patch fails to apply, update `copy-file-uri.patch`
+
+## Reverting to Official Spectacle
+
+```bash
+sudo pacman -S spectacle
+```
+
+---
+
 # <img src="logo.png" width="48"/> Spectacle - The KDE Screenshot Utility
 
 Spectacle is a screenshot taking utility for the KDE desktop. Spectacle
