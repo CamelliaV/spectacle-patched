@@ -1,5 +1,7 @@
 # Spectacle Patched
 
+Language: English | [简体中文](README.zh-CN.md)
+
 This repository is an Arch Linux packaging fork of [KDE Spectacle](https://invent.kde.org/plasma/spectacle).
 
 The goal is to keep upstream Spectacle behavior, with only two fork-specific additions.
