@@ -9,12 +9,13 @@
 #include "SpectacleWindow.h"
 
 #include "ExportManager.h"
-#include "SpectacleCore.h"
 #include "Geometry.h"
 #include "Gui/ExportMenu.h"
 #include "Gui/HelpMenu.h"
 #include "Gui/OptionsMenu.h"
 #include "Gui/WidgetWindowUtils.h"
+#include "SpectacleCore.h"
+#include "settings.h"
 
 #include <QApplication>
 #include <QColorDialog>
@@ -429,6 +430,10 @@ void SpectacleWindow::keyReleaseEvent(QKeyEvent *event)
     // Events need to be processed normally first for events to reach items
     QQuickView::keyReleaseEvent(event);
     if (event->isAccepted()) {
+        return;
+    }
+    if (Settings::gameMode()) {
+        m_pressedKeys = {};
         return;
     }
     // Cancel defaults to Escape in QPlatformTheme.

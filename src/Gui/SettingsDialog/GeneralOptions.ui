@@ -148,7 +148,14 @@
      </item>
     </widget>
    </item>
-   <item row="7" column="0" colspan="2">
+   <item row="7" column="1">
+    <widget class="QCheckBox" name="kcfg_gameMode">
+     <property name="text">
+      <string>Enable game mode (ignore all Spectacle hotkeys)</string>
+     </property>
+    </widget>
+   </item>
+   <item row="8" column="0" colspan="2">
     <spacer name="verticalSpacer_2">
      <property name="orientation">
       <enum>Qt::Vertical</enum>
@@ -164,42 +171,42 @@
      </property>
     </spacer>
    </item>
-   <item row="8" column="0" colspan="2">
+   <item row="9" column="0" colspan="2">
     <widget class="KTitleWidget" name="regionTitle">
      <property name="text">
       <string>Rectangular Region Selection</string>
      </property>
     </widget>
    </item>
-   <item row="9" column="0">
+   <item row="10" column="0">
     <widget class="QLabel" name="generalLabel">
      <property name="text">
       <string>General:</string>
      </property>
     </widget>
    </item>
-   <item row="9" column="1">
+   <item row="10" column="1">
     <widget class="QCheckBox" name="kcfg_useLightMaskColor">
      <property name="text">
       <string>Use light background</string>
      </property>
     </widget>
    </item>
-   <item row="10" column="1">
+   <item row="11" column="1">
     <widget class="QCheckBox" name="kcfg_useReleaseToCapture">
      <property name="text">
       <string>Accept on click-and-release</string>
      </property>
     </widget>
    </item>
-   <item row="11" column="0">
+   <item row="12" column="0">
     <widget class="QLabel" name="label">
      <property name="text">
       <string>Show magnifier:</string>
      </property>
     </widget>
    </item>
-   <item row="11" column="1">
+   <item row="12" column="1">
     <widget class="QComboBox" name="kcfg_showMagnifier">
      <item>
       <property name="text">
@@ -218,14 +225,14 @@
      </item>
     </widget>
    </item>
-   <item row="12" column="0">
+   <item row="13" column="0">
     <widget class="QLabel" name="rememberLabel">
      <property name="text">
       <string>Remember selected area:</string>
      </property>
     </widget>
    </item>
-   <item row="12" column="1">
+   <item row="13" column="1">
     <widget class="QComboBox" name="kcfg_rememberSelectionRect">
      <item>
       <property name="text">
@@ -244,7 +251,7 @@
      </item>
     </widget>
    </item>
-   <item row="14" column="0" colspan="2">
+   <item row="15" column="0" colspan="2">
     <spacer name="verticalSpacer_3">
      <property name="orientation">
       <enum>Qt::Vertical</enum>
@@ -260,21 +267,21 @@
      </property>
     </spacer>
    </item>
-   <item row="15" column="0" colspan="2">
+   <item row="16" column="0" colspan="2">
     <widget class="KTitleWidget" name="ocrTitle">
      <property name="text">
       <string>Text Recognition (OCR)</string>
      </property>
     </widget>
    </item>
-   <item row="16" column="0">
+   <item row="17" column="0">
     <widget class="QLabel" name="ocrLanguageLabel">
      <property name="text">
       <string>Languages for OCR:</string>
      </property>
     </widget>
    </item>
-   <item row="16" column="1">
+   <item row="17" column="1">
     <widget class="QScrollArea" name="ocrLanguageScrollArea">
      <property name="widgetResizable">
       <bool>true</bool>
@@ -305,14 +312,14 @@
      </widget>
     </widget>
    </item>
-   <item row="17" column="0">
+   <item row="18" column="0">
     <widget class="QLabel" name="closeAfterOcrLabel">
      <property name="text">
       <string>Text extraction:</string>
      </property>
     </widget>
    </item>
-   <item row="17" column="1">
+   <item row="18" column="1">
     <layout class="QHBoxLayout" name="closeAfterOcrLayout">
      <property name="leftMargin">
       <number>0</number>
@@ -372,11 +379,11 @@
          <height>20</height>
         </size>
        </property>
-      </spacer>
+     </spacer>
      </item>
     </layout>
    </item>
-   <item row="18" column="0" colspan="2">
+   <item row="19" column="0" colspan="2">
     <widget class="QWidget" name="ocrUnavailableWidget">
      <property name="visible">
       <bool>false</bool>
@@ -473,9 +480,9 @@
   <tabstop>kcfg_autoSaveImage</tabstop>
   <tabstop>kcfg_clipboardGroup</tabstop>
   <tabstop>kcfg_printKeyRunningAction</tabstop>
+  <tabstop>kcfg_gameMode</tabstop>
   <tabstop>kcfg_useLightMaskColor</tabstop>
   <tabstop>kcfg_useReleaseToCapture</tabstop>
-  <tabstop>kcfg_showCaptureInstructions</tabstop>
   <tabstop>kcfg_rememberSelectionRect</tabstop>
   <tabstop>ocrLanguageScrollArea</tabstop>
  </tabstops>

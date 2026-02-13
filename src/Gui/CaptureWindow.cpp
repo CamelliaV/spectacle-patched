@@ -47,7 +47,8 @@ CaptureWindow::CaptureWindow(Mode mode, QScreen *screen, QQmlEngine *engine, QWi
 
     setWindowStates(Qt::WindowFullScreen);
 
-    KWaylandExtras::setXdgToplevelTag(this, QStringLiteral("region-editor"));
+    // TODO: Requires newer KF6WindowSystem
+    // KWaylandExtras::setXdgToplevelTag(this, QStringLiteral("region-editor"));
 
     this->setColor(Qt::transparent);
 

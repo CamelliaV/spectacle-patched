@@ -26,6 +26,7 @@
 // generated
 #include "settings.h"
 
+#include <KConfigGroup>
 #include <KFormat>
 #include <KGlobalAccel>
 #include <KIO/OpenUrlJob>
@@ -45,6 +46,7 @@
 #include <QDBusMessage>
 #include <QDir>
 #include <QDrag>
+#include <QEvent>
 #include <QKeySequence>
 #include <QMetaObject>
 #include <QMimeData>
@@ -67,8 +69,64 @@ using namespace Qt::StringLiterals;
 
 SpectacleCore *SpectacleCore::s_self = nullptr;
 static std::unique_ptr<KStatusNotifierItem> s_systemTrayIcon;
-
 static QList<KNotification *> notifications;
+
+namespace
+{
+constexpr auto s_gameModeBackupGroup = "GameModeShortcutBackup";
+constexpr auto s_gameModeBackupActionsGroup = "Actions";
+constexpr auto s_gameModeHasBackupKey = "hasBackup";
+
+QList<QAction *> spectacleGlobalShortcutActions()
+{
+    auto shortcuts = ShortcutActions::self();
+    return {
+        shortcuts->openAction(),
+        shortcuts->fullScreenAction(),
+        shortcuts->currentScreenAction(),
+        shortcuts->activeWindowAction(),
+        shortcuts->regionAction(),
+        shortcuts->windowUnderCursorAction(),
+        shortcuts->recordScreenAction(),
+        shortcuts->recordWindowAction(),
+        shortcuts->recordRegionAction(),
+        shortcuts->openWithoutScreenshotAction(),
+    };
+}
+
+QStringList shortcutListToPortableText(const QList<QKeySequence> &shortcuts)
+{
+    QStringList serialized;
+    serialized.reserve(shortcuts.size());
+    for (const auto &shortcut : shortcuts) {
+        if (!shortcut.isEmpty()) {
+            serialized.push_back(shortcut.toString(QKeySequence::PortableText));
+        }
+    }
+    return serialized;
+}
+
+QList<QKeySequence> shortcutListFromPortableText(const QStringList &serialized)
+{
+    QList<QKeySequence> shortcuts;
+    shortcuts.reserve(serialized.size());
+    for (const auto &shortcutText : serialized) {
+        const auto shortcut = QKeySequence::fromString(shortcutText, QKeySequence::PortableText);
+        if (!shortcut.isEmpty()) {
+            shortcuts.push_back(shortcut);
+        }
+    }
+    return shortcuts;
+}
+
+bool isSpectacleGlobalShortcutAction(const QAction *action)
+{
+    const auto actions = spectacleGlobalShortcutActions();
+    return std::any_of(actions.cbegin(), actions.cend(), [action](const QAction *knownAction) {
+        return knownAction == action;
+    });
+}
+}
 
 SpectacleCore::SpectacleCore(QObject *parent)
     : QObject(parent)
@@ -126,6 +184,21 @@ SpectacleCore::SpectacleCore(QObject *parent)
     m_videoPlatform = loadVideoPlatform();
     auto imagePlatform = m_imagePlatform.get();
     m_annotationDocument = std::make_unique<AnnotationDocument>();
+    qApp->installEventFilter(this);
+    connect(Settings::self(), &Settings::gameModeChanged, this, &SpectacleCore::updateGameModeShortcuts);
+    connect(KGlobalAccel::self(), &KGlobalAccel::globalShortcutChanged, this, [this](QAction *action, const QKeySequence &) {
+        if (!Settings::gameMode() || m_gameModeShortcutUpdateInProgress || !isSpectacleGlobalShortcutAction(action)) {
+            return;
+        }
+        KConfigGroup backupGroup(Settings::self()->config(), QLatin1StringView(s_gameModeBackupGroup));
+        KConfigGroup backupActionsGroup(&backupGroup, QLatin1StringView(s_gameModeBackupActionsGroup));
+        backupGroup.writeEntry(QLatin1StringView(s_gameModeHasBackupKey), true);
+        backupActionsGroup.writeEntry(action->objectName(), shortcutListToPortableText(KGlobalAccel::self()->shortcut(action)));
+        m_gameModeShortcutUpdateInProgress = true;
+        KGlobalAccel::self()->setShortcut(action, QList<QKeySequence>{}, KGlobalAccel::NoAutoloading);
+        m_gameModeShortcutUpdateInProgress = false;
+        Settings::self()->config()->sync();
+    });
 
     // essential connections
     connect(SelectionEditor::instance(), &SelectionEditor::accepted,
@@ -692,6 +765,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
                                                 // Also use Meta+R for now
                                                 Qt::META | Qt::Key_R,
                                             });
+    updateGameModeShortcuts();
 
     connect(qApp, &QApplication::screenRemoved, this, [this](QScreen *screen) {
         // It's dangerous to erase from within a for loop, so we use std::find_if
@@ -703,6 +777,57 @@ SpectacleCore::SpectacleCore(QObject *parent)
             m_captureWindows.erase(it);
         }
     });
+}
+
+bool SpectacleCore::eventFilter(QObject *watched, QEvent *event)
+{
+    Q_UNUSED(watched)
+    if (Settings::gameMode() && event && event->type() == QEvent::Shortcut) {
+        event->accept();
+        return true;
+    }
+    return QObject::eventFilter(watched, event);
+}
+
+void SpectacleCore::updateGameModeShortcuts()
+{
+    if (m_gameModeShortcutUpdateInProgress) {
+        return;
+    }
+
+    m_gameModeShortcutUpdateInProgress = true;
+    auto config = Settings::self()->config();
+    KConfigGroup backupGroup(config, QLatin1StringView(s_gameModeBackupGroup));
+    KConfigGroup backupActionsGroup(&backupGroup, QLatin1StringView(s_gameModeBackupActionsGroup));
+    auto actions = spectacleGlobalShortcutActions();
+
+    if (Settings::gameMode()) {
+        if (!backupGroup.readEntry(QLatin1StringView(s_gameModeHasBackupKey), false)) {
+            for (auto *action : std::as_const(actions)) {
+                backupActionsGroup.writeEntry(action->objectName(), shortcutListToPortableText(KGlobalAccel::self()->shortcut(action)));
+            }
+            backupGroup.writeEntry(QLatin1StringView(s_gameModeHasBackupKey), true);
+        }
+
+        for (auto *action : std::as_const(actions)) {
+            KGlobalAccel::self()->setShortcut(action, QList<QKeySequence>{}, KGlobalAccel::NoAutoloading);
+        }
+        config->sync();
+        m_gameModeShortcutUpdateInProgress = false;
+        return;
+    }
+
+    if (backupGroup.readEntry(QLatin1StringView(s_gameModeHasBackupKey), false)) {
+        for (auto *action : std::as_const(actions)) {
+            const auto serialized = backupActionsGroup.readEntry(action->objectName(), QStringList{});
+            KGlobalAccel::self()->setShortcut(action, shortcutListFromPortableText(serialized), KGlobalAccel::NoAutoloading);
+        }
+        backupGroup.deleteGroup(QLatin1StringView(s_gameModeBackupActionsGroup));
+        backupGroup.deleteEntry(QLatin1StringView(s_gameModeHasBackupKey));
+        config->sync();
+    }
+
+    m_gameModeShortcutUpdateInProgress = false;
 }
 
 bool SpectacleCore::ocrAvailable() const
@@ -1591,6 +1716,9 @@ void SpectacleCore::activateAction(const QString &actionName, const QVariant &pa
 {
     Q_UNUSED(parameter)
     m_startMode = StartMode::DBus;
+    if (Settings::gameMode()) {
+        return;
+    }
     if (m_videoPlatform->isRecording()) {
         // BUG: https://bugs.kde.org/show_bug.cgi?id=481471
         // TODO: find a way to support screenshot shortcuts while recording?

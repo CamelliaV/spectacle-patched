@@ -1,10 +1,10 @@
-# Maintainer: Cindy (local patched build)
-# Based on official Arch Linux PKGBUILD
+# Maintainer: Cindy <cameliascript@gmail.com>
+# Contributor: Based on official Arch Linux spectacle PKGBUILD
 
 pkgname=spectacle-patched
 _pkgname=spectacle
-pkgver=6.5.4
-pkgrel=1
+pkgver=6.5.5
+pkgrel=2
 epoch=1
 pkgdesc='KDE screenshot capture utility (with copy file URI patch)'
 arch=(x86_64)
@@ -48,17 +48,27 @@ makedepends=(extra-cmake-modules
              kquickimageeditor
              plasma-wayland-protocols
              wayland-protocols)
+optdepends=('tesseract: OCR text recognition'
+            'tessdata: OCR language data')
 provides=(spectacle)
 conflicts=(spectacle)
 groups=(plasma)
-source=(https://download.kde.org/stable/plasma/$pkgver/$_pkgname-$pkgver.tar.xz
-        copy-file-uri.patch)
+source=(https://download.kde.org/stable/plasma/$pkgver/$_pkgname-$pkgver.tar.xz{,.sig}
+        copy-file-uri.patch
+        game-mode-shortcut-suppression.patch)
 sha256sums=('SKIP'
+            'SKIP'
+            'SKIP'
             'SKIP')
+validpgpkeys=(E0A3EB202F8E57528E13E72FD7574483BB57B18D  # Jonathan Esk-Riddell <jr@jriddell.org>
+              0AAC775BB6437A8D9AF7A3ACFE0784117FBCE11D  # Bhushan Shah <bshah@kde.org>
+              D07BD8662C56CB291B316EB2F5675605C74E02CF  # David Edmundson <davidedmundson@kde.org>
+              1FA881591C26B276D7A5518EEAAF29B42A678C20) # Marco Martin <notmart@gmail.com>
 
 prepare() {
   cd $_pkgname-$pkgver
   patch -Np1 -i ../copy-file-uri.patch
+  patch -Np1 -i ../game-mode-shortcut-suppression.patch
 }
 
 build() {

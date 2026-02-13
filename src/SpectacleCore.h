@@ -27,6 +27,8 @@
 #include <array>
 #include <memory>
 
+class QEvent;
+
 class SpectacleCore : public QObject
 {
     Q_OBJECT
@@ -137,6 +139,7 @@ Q_SIGNALS:
 
 private:
     explicit SpectacleCore(QObject *parent = nullptr);
+    bool eventFilter(QObject *watched, QEvent *event) override;
 
     enum class ScreenCapture {
         Screenshot,
@@ -158,6 +161,7 @@ private:
     void setCurrentVideo(const QUrl &currentVideo);
     QUrl videoOutputUrl() const;
     bool performOcrExtraction(const QString &languageCode);
+    void updateGameModeShortcuts();
 
     static SpectacleCore *s_self;
     std::unique_ptr<AnnotationDocument> m_annotationDocument = nullptr;
@@ -194,6 +198,7 @@ private:
     VideoPlatform::RecordingMode m_lastRecordingMode = VideoPlatform::NoRecordingModes;
     bool m_videoMode = false;
     QUrl m_currentVideo;
+    bool m_gameModeShortcutUpdateInProgress = false;
 
     static inline QQmlEngine *s_qmlEngine = nullptr;
 };
