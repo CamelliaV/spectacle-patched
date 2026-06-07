@@ -1,0 +1,131 @@
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index 32172c9d..a9231f4c 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -43,6 +43,7 @@ target_sources(spectacle PRIVATE
+     Gui/ScreenshotModeMenu.cpp
+     Gui/Selection.cpp
+     Gui/SelectionEditor.cpp
++    Gui/SelectionRectUtils.cpp
+     Gui/SettingsDialog/GeneralOptionsPage.cpp
+     Gui/SettingsDialog/ImageSaveOptionsPage.cpp
+     Gui/SettingsDialog/SettingsDialog.cpp
+diff --git a/src/Gui/SelectionEditor.cpp b/src/Gui/SelectionEditor.cpp
+index 6314efc6..06d52b64 100644
+--- a/src/Gui/SelectionEditor.cpp
++++ b/src/Gui/SelectionEditor.cpp
+@@ -7,6 +7,7 @@
+ #include "SelectionEditor.h"
+ 
+ #include "Selection.h"
++#include "SelectionRectUtils.h"
+ #include "Geometry.h"
+ #include "settings.h"
+ 
+@@ -434,12 +435,25 @@ bool SelectionEditor::acceptSelection(ExportManager::Actions actions)
+ 
+     if (selectionRect.isEmpty()) {
+         selectionRect = d->screensRect;
++    } else {
++        Settings::setLastSelectionRect(selectionRect);
+     }
+ 
+     Q_EMIT accepted(selectionRect, actions);
+     return true;
+ }
+ 
++bool SelectionEditor::restoreLastSelectionRect()
++{
++    const auto rect = SelectionRectUtils::restorableSelectionRect(Settings::lastSelectionRect(), d->screensRect);
++    if (rect.isEmpty()) {
++        return false;
++    }
++
++    d->selection->setRect(rect);
++    return true;
++}
++
+ void SelectionEditor::reset()
+ {
+     qreal dpr = qGuiApp->devicePixelRatio();
+@@ -525,6 +539,11 @@ void SelectionEditor::keyPressEvent(QQuickItem *item, QKeyEvent *event)
+         d->setShowMagnifier(event->modifiers().testFlag(Qt::ShiftModifier));
+         event->accept();
+         break;
++    case Qt::Key_R:
++        if (event->modifiers() == Qt::NoModifier && restoreLastSelectionRect()) {
++            event->accept();
++        }
++        break;
+     case Qt::Key_Shift:
+         d->setShowMagnifier(true);
+         break;
+diff --git a/src/Gui/SelectionEditor.h b/src/Gui/SelectionEditor.h
+index 558c3c31..e2d37d70 100644
+--- a/src/Gui/SelectionEditor.h
++++ b/src/Gui/SelectionEditor.h
+@@ -80,6 +80,7 @@ public:
+     Location magnifierLocation() const;
+ 
+     Q_SLOT bool acceptSelection(ExportManager::Actions actions = {});
++    Q_SLOT bool restoreLastSelectionRect();
+ 
+     void reset();
+ 
+diff --git a/src/Gui/SelectionRectUtils.cpp b/src/Gui/SelectionRectUtils.cpp
+new file mode 100644
+index 00000000..4efb6a1b
+--- /dev/null
++++ b/src/Gui/SelectionRectUtils.cpp
+@@ -0,0 +1,18 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.0-or-later
++ */
++
++#include "SelectionRectUtils.h"
++
++namespace SelectionRectUtils
++{
++QRectF restorableSelectionRect(const QRectF &savedRect, const QRectF &screensRect)
++{
++    const auto normalizedSavedRect = savedRect.normalized();
++    if (normalizedSavedRect.isEmpty() || screensRect.isEmpty()) {
++        return {};
++    }
++
++    return normalizedSavedRect.intersected(screensRect.normalized());
++}
++}
+diff --git a/src/Gui/SelectionRectUtils.h b/src/Gui/SelectionRectUtils.h
+new file mode 100644
+index 00000000..705dd122
+--- /dev/null
++++ b/src/Gui/SelectionRectUtils.h
+@@ -0,0 +1,12 @@
++/*
++ * SPDX-License-Identifier: LGPL-2.0-or-later
++ */
++
++#pragma once
++
++#include <QRectF>
++
++namespace SelectionRectUtils
++{
++[[nodiscard]] QRectF restorableSelectionRect(const QRectF &savedRect, const QRectF &screensRect);
++}
+diff --git a/src/Gui/SettingsDialog/spectacle.kcfg b/src/Gui/SettingsDialog/spectacle.kcfg
+index b262ecfa..31c8d505 100644
+--- a/src/Gui/SettingsDialog/spectacle.kcfg
++++ b/src/Gui/SettingsDialog/spectacle.kcfg
+@@ -88,6 +88,10 @@
+         <label>The last used region the user selected</label>
+         <default>QRectF(0,0,0,0)</default>
+     </entry>
++    <entry name="lastSelectionRect" type="RectF">
++        <label>The last rectangular region the user accepted</label>
++        <default>QRectF(0,0,0,0)</default>
++    </entry>
+     <entry name="captureOnClick" type="Bool">
+         <label>Take screenshot on click</label>
+         <default>false</default>

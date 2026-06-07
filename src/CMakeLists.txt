@@ -36,6 +36,7 @@ target_sources(spectacle PRIVATE
     Gui/ScreenshotModeMenu.cpp
     Gui/Selection.cpp
     Gui/SelectionEditor.cpp
+    Gui/SelectionRectUtils.cpp
     Gui/SettingsDialog/GeneralOptionsPage.cpp
     Gui/SettingsDialog/ImageSaveOptionsPage.cpp
     Gui/SettingsDialog/OcrLanguageSelector.cpp

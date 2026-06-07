@@ -7,10 +7,11 @@
 #include "SelectionEditor.h"
 
 #include "CaptureWindow.h"
-#include "Selection.h"
-#include "Geometry.h"
-#include "settings.h"
 #include "DebugUtils.h"
+#include "Geometry.h"
+#include "Selection.h"
+#include "SelectionRectUtils.h"
+#include "settings.h"
 
 #include <KLocalizedString>
 #include <KWindowSystem>
@@ -441,9 +442,22 @@ bool SelectionEditor::acceptSelection(ExportManager::Actions actions)
 
     if (selectionRect.isEmpty()) {
         selectionRect = d->screensRect;
+    } else {
+        Settings::setLastSelectionRect(selectionRect);
     }
 
     Q_EMIT accepted(selectionRect, actions);
+    return true;
+}
+
+bool SelectionEditor::restoreLastSelectionRect()
+{
+    const auto rect = SelectionRectUtils::restorableSelectionRect(Settings::lastSelectionRect(), d->screensRect);
+    if (rect.isEmpty()) {
+        return false;
+    }
+
+    d->selection->setRect(rect);
     return true;
 }
 
@@ -535,6 +549,11 @@ void SelectionEditor::keyPressEvent(QQuickItem *item, QKeyEvent *event)
         d->handleArrowKey(event);
         d->setShowMagnifier(event->modifiers().testFlag(Qt::ShiftModifier));
         event->accept();
+        break;
+    case Qt::Key_R:
+        if (event->modifiers() == Qt::NoModifier && restoreLastSelectionRect()) {
+            event->accept();
+        }
         break;
     case Qt::Key_Shift:
         d->setShowMagnifier(true);

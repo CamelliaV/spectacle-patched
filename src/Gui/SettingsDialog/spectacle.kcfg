@@ -88,6 +88,10 @@
         <label>The last used region the user selected</label>
         <default>QRectF(0,0,0,0)</default>
     </entry>
+    <entry name="lastSelectionRect" type="RectF">
+        <label>The last rectangular region the user accepted</label>
+        <default>QRectF(0,0,0,0)</default>
+    </entry>
     <entry name="captureOnClick" type="Bool">
         <label>Take screenshot on click</label>
         <default>false</default>

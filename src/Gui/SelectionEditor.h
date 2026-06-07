@@ -80,6 +80,7 @@ public:
     Location magnifierLocation() const;
 
     Q_SLOT bool acceptSelection(ExportManager::Actions actions = {});
+    Q_SLOT bool restoreLastSelectionRect();
 
     void reset();
 

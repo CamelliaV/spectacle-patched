@@ -4,9 +4,9 @@
 pkgname=spectacle-patched
 _pkgname=spectacle
 pkgver=6.5.5
-pkgrel=2
+pkgrel=4
 epoch=1
-pkgdesc='KDE screenshot capture utility (with copy file URI patch)'
+pkgdesc='KDE screenshot capture utility with patched workflow features'
 arch=(x86_64)
 url='https://kde.org/plasma-desktop/'
 license=(GPL-2.0-or-later)
@@ -55,8 +55,10 @@ conflicts=(spectacle)
 groups=(plasma)
 source=(https://download.kde.org/stable/plasma/$pkgver/$_pkgname-$pkgver.tar.xz{,.sig}
         copy-file-uri.patch
-        game-mode-shortcut-suppression.patch)
+        game-mode-shortcut-suppression.patch
+        restore-last-selection-rect.patch)
 sha256sums=('SKIP'
+            'SKIP'
             'SKIP'
             'SKIP'
             'SKIP')
@@ -70,6 +72,7 @@ prepare() {
   cd $_pkgname-$pkgver
   patch -Np1 -i ../copy-file-uri.patch
   patch -Np1 -i ../game-mode-shortcut-suppression.patch
+  patch -Np1 -i ../restore-last-selection-rect.patch
 }
 
 build() {
