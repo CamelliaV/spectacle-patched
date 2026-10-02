@@ -24,13 +24,21 @@ The fork keeps upstream behavior by default. Its maintained differences are:
 - The saved region keeps fractional logical coordinates, so high-DPI or fractional-scale setups do not drift by rounding.
 - Empty or fully off-screen saved regions are ignored.
 
+4. `Current Screen for Empty Selections`
+- In rectangular capture, accepting an empty selection with Enter, double-click, or the confirmation action captures the screen under the pointer instead of the entire virtual desktop.
+- Explicit selections (including cross-screen regions), `R` restoration, and entire-desktop capture keep their existing behavior.
+
 ## Patch Set
 
-`PKGBUILD` applies these patches on top of the upstream tarball:
+`PKGBUILD` applies these patches on top of the upstream tarball (currently Plasma 6.7.5):
 
 - `copy-file-uri.patch`
 - `game-mode-shortcut-suppression.patch`
 - `restore-last-selection-rect.patch`
+- `empty-selection-current-screen.patch`
+
+The former `geometry-inverted-bounds.patch` was dropped: upstream 6.7.x ships the same fix
+(`Geometry::rectBounded` no longer uses the asserting `std::clamp`).
 
 ## Build and Install (Arch Linux)
 

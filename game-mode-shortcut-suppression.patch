@@ -1,19 +1,7 @@
---- a/src/Gui/SettingsDialog/spectacle.kcfg
-+++ b/src/Gui/SettingsDialog/spectacle.kcfg
-@@ -31,6 +31,10 @@
-         </choices>
-         <default>TakeNewScreenshot</default>
-     </entry>
-+    <entry name="gameMode" type="Bool">
-+        <label>Ignore all Spectacle hotkeys while game mode is enabled</label>
-+        <default>false</default>
-+    </entry>
-     <entry name="autoSaveImage" type="Bool">
-         <label>Save screenshot automatically after it is taken</label>
-         <default>false</default>
+diff --git a/src/Gui/SettingsDialog/GeneralOptions.ui b/src/Gui/SettingsDialog/GeneralOptions.ui
 --- a/src/Gui/SettingsDialog/GeneralOptions.ui
 +++ b/src/Gui/SettingsDialog/GeneralOptions.ui
-@@ -148,7 +148,14 @@
+@@ -143,7 +148,14 @@
       </item>
      </widget>
     </item>
@@ -29,7 +17,7 @@
      <spacer name="verticalSpacer_2">
       <property name="orientation">
        <enum>Qt::Vertical</enum>
-@@ -164,42 +171,42 @@
+@@ -159,42 +171,42 @@
       </property>
      </spacer>
     </item>
@@ -78,24 +66,7 @@
      <widget class="QComboBox" name="kcfg_showMagnifier">
       <item>
        <property name="text">
-@@ -218,14 +225,14 @@
-      </item>
-     </widget>
-    </item>
--   <item row="12" column="0">
-+   <item row="13" column="0">
-     <widget class="QLabel" name="rememberLabel">
-      <property name="text">
-       <string>Remember selected area:</string>
-      </property>
-     </widget>
-    </item>
--   <item row="12" column="1">
-+   <item row="13" column="1">
-     <widget class="QComboBox" name="kcfg_rememberSelectionRect">
-      <item>
-       <property name="text">
-@@ -258,9 +265,9 @@
+@@ -468,9 +480,9 @@
    <tabstop>kcfg_autoSaveImage</tabstop>
    <tabstop>kcfg_clipboardGroup</tabstop>
    <tabstop>kcfg_printKeyRunningAction</tabstop>
@@ -104,64 +75,66 @@
    <tabstop>kcfg_useReleaseToCapture</tabstop>
 -  <tabstop>kcfg_showCaptureInstructions</tabstop>
    <tabstop>kcfg_rememberSelectionRect</tabstop>
+   <tabstop>ocrLanguageScrollArea</tabstop>
   </tabstops>
-  <resources/>
---- a/src/SpectacleCore.h
-+++ b/src/SpectacleCore.h
-@@ -25,6 +25,8 @@
- #include <array>
- #include <memory>
+diff --git a/src/Gui/SettingsDialog/spectacle.kcfg b/src/Gui/SettingsDialog/spectacle.kcfg
+--- a/src/Gui/SettingsDialog/spectacle.kcfg
++++ b/src/Gui/SettingsDialog/spectacle.kcfg
+@@ -30,6 +30,10 @@
+         </choices>
+         <default>TakeNewScreenshot</default>
+     </entry>
++    <entry name="gameMode" type="Bool">
++        <label>Ignore all Spectacle hotkeys while game mode is enabled</label>
++        <default>false</default>
++    </entry>
+     <entry name="autoSaveImage" type="Bool">
+         <label>Save screenshot automatically after it is taken</label>
+         <default>false</default>
+diff --git a/src/Gui/SpectacleWindow.cpp b/src/Gui/SpectacleWindow.cpp
+--- a/src/Gui/SpectacleWindow.cpp
++++ b/src/Gui/SpectacleWindow.cpp
+@@ -15,6 +15,7 @@
+ #include "Gui/HelpMenu.h"
+ #include "Gui/OptionsMenu.h"
+ #include "Gui/WidgetWindowUtils.h"
++#include "settings.h"
  
-+class QEvent;
-+
- class SpectacleCore : public QObject
- {
-     Q_OBJECT
-@@ -128,6 +130,7 @@
- 
- private:
-     explicit SpectacleCore(QObject *parent = nullptr);
-+    bool eventFilter(QObject *watched, QEvent *event) override;
- 
-     enum class ScreenCapture {
-         Screenshot,
-@@ -148,6 +151,7 @@
-     void unityLauncherUpdate(const QVariantMap &properties) const;
-     void setCurrentVideo(const QUrl &currentVideo);
-     QUrl videoOutputUrl() const;
-+    void updateGameModeShortcuts();
- 
-     static SpectacleCore *s_self;
-     std::unique_ptr<AnnotationDocument> m_annotationDocument = nullptr;
-@@ -182,6 +186,7 @@
-     VideoPlatform::RecordingMode m_lastRecordingMode = VideoPlatform::NoRecordingModes;
-     bool m_videoMode = false;
-     QUrl m_currentVideo;
-+    bool m_gameModeShortcutUpdateInProgress = false;
- 
-     static inline QQmlEngine *s_qmlEngine = nullptr;
- };
+ #include <QApplication>
+ #include <QColorDialog>
+@@ -438,6 +439,10 @@
+     if (event->isAccepted()) {
+         return;
+     }
++    if (Settings::gameMode()) {
++        m_pressedKeys = {};
++        return;
++    }
+     // Cancel defaults to Escape in QPlatformTheme.
+     // Handling this here fixes https://bugs.kde.org/show_bug.cgi?id=428478
+     if ((event->matches(QKeySequence::Quit)
+diff --git a/src/SpectacleCore.cpp b/src/SpectacleCore.cpp
 --- a/src/SpectacleCore.cpp
 +++ b/src/SpectacleCore.cpp
-@@ -29,6 +29,7 @@
+@@ -26,6 +26,7 @@
+ // generated
  #include "settings.h"
- #include "DebugUtils.h"
  
 +#include <KConfigGroup>
  #include <KFormat>
  #include <KGlobalAccel>
  #include <KIO/OpenUrlJob>
-@@ -48,6 +49,7 @@
+@@ -46,6 +47,7 @@
  #include <QDBusMessage>
  #include <QDir>
  #include <QDrag>
 +#include <QEvent>
  #include <QKeySequence>
+ #include <QMetaObject>
  #include <QMimeData>
- #include <QMovie>
-@@ -68,6 +70,63 @@
- SpectacleCore *SpectacleCore::s_self = nullptr;
- static std::unique_ptr<KStatusNotifierItem> s_systemTrayIcon;
+@@ -71,6 +73,63 @@
+ 
+ static QList<KNotification *> notifications;
  
 +namespace
 +{
@@ -223,7 +196,7 @@
  SpectacleCore::SpectacleCore(QObject *parent)
      : QObject(parent)
  {
-@@ -124,6 +183,21 @@
+@@ -127,6 +186,21 @@
      m_videoPlatform = loadVideoPlatform();
      auto imagePlatform = m_imagePlatform.get();
      m_annotationDocument = std::make_unique<AnnotationDocument>();
@@ -245,7 +218,7 @@
  
      // essential connections
      connect(SelectionEditor::instance(), &SelectionEditor::accepted,
-@@ -569,6 +643,7 @@
+@@ -700,6 +774,7 @@
                                                  // Also use Meta+R for now
                                                  Qt::META | Qt::Key_R,
                                              });
@@ -253,8 +226,8 @@
  
      connect(qApp, &QApplication::screenRemoved, this, [this](QScreen *screen) {
          // It's dangerous to erase from within a for loop, so we use std::find_if
-@@ -582,6 +657,57 @@
-     });
+@@ -796,6 +871,57 @@
+     return true;
  }
  
 +bool SpectacleCore::eventFilter(QObject *watched, QEvent *event)
@@ -311,7 +284,7 @@
  SpectacleCore::~SpectacleCore() noexcept
  {
      s_self = nullptr;
-@@ -1384,6 +1510,9 @@
+@@ -1612,6 +1739,9 @@
  {
      Q_UNUSED(parameter)
      m_startMode = StartMode::DBus;
@@ -321,24 +294,39 @@
      if (m_videoPlatform->isRecording()) {
          // BUG: https://bugs.kde.org/show_bug.cgi?id=481471
          // TODO: find a way to support screenshot shortcuts while recording?
---- a/src/Gui/SpectacleWindow.cpp
-+++ b/src/Gui/SpectacleWindow.cpp
-@@ -15,6 +15,7 @@
- #include "Gui/HelpMenu.h"
- #include "Gui/OptionsMenu.h"
- #include "Gui/WidgetWindowUtils.h"
-+#include "settings.h"
+diff --git a/src/SpectacleCore.h b/src/SpectacleCore.h
+--- a/src/SpectacleCore.h
++++ b/src/SpectacleCore.h
+@@ -27,6 +27,8 @@
+ #include <array>
+ #include <memory>
  
- #include <QApplication>
- #include <QColorDialog>
-@@ -431,6 +432,10 @@
-     if (event->isAccepted()) {
-         return;
-     }
-+    if (Settings::gameMode()) {
-+        m_pressedKeys = {};
-+        return;
-+    }
-     // Cancel defaults to Escape in QPlatformTheme.
-     // Handling this here fixes https://bugs.kde.org/show_bug.cgi?id=428478
-     if ((event->matches(QKeySequence::Quit)
++class QEvent;
++
+ class SpectacleCore : public QObject
+ {
+     Q_OBJECT
+@@ -137,6 +139,7 @@
+ 
+ private:
+     explicit SpectacleCore(QObject *parent = nullptr);
++    bool eventFilter(QObject *watched, QEvent *event) override;
+ 
+     enum class ScreenCapture {
+         Screenshot,
+@@ -158,6 +161,7 @@
+     void setCurrentVideo(const QUrl &currentVideo);
+     QUrl videoOutputUrl() const;
+     bool performOcrExtraction(const QString &languageCode);
++    void updateGameModeShortcuts();
+ 
+     static SpectacleCore *s_self;
+     std::unique_ptr<AnnotationDocument> m_annotationDocument = nullptr;
+@@ -194,6 +198,7 @@
+     VideoPlatform::RecordingMode m_lastRecordingMode = VideoPlatform::NoRecordingModes;
+     bool m_videoMode = false;
+     QUrl m_currentVideo;
++    bool m_gameModeShortcutUpdateInProgress = false;
+ 
+     static inline QQmlEngine *s_qmlEngine = nullptr;
+ };

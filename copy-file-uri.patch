@@ -1,8 +1,7 @@
 diff --git a/src/ExportManager.cpp b/src/ExportManager.cpp
-index 1b3a9ec9..af712698 100644
 --- a/src/ExportManager.cpp
 +++ b/src/ExportManager.cpp
-@@ -727,7 +727,8 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
+@@ -729,7 +729,8 @@
          // This behavior has no relation to the setting in the config UI,
          // but it was added to solve this feature request:
          // https://bugs.kde.org/show_bug.cgi?id=357423
@@ -12,8 +11,8 @@ index 1b3a9ec9..af712698 100644
          if (!url.isValid()) {
              if (m_imageSavedNotInTemp) {
                  // The image has been saved (manually or automatically),
-@@ -741,7 +742,13 @@ void ExportManager::exportImage(ExportManager::Actions actions, QUrl url)
-
+@@ -743,7 +744,13 @@
+ 
          // will be deleted for us by the platform's clipboard manager.
          auto data = new QMimeData();
 -        data->setText(url.toLocalFile());
@@ -27,7 +26,7 @@ index 1b3a9ec9..af712698 100644
          KSystemClipboard::instance()->setMimeData(data, QClipboard::Clipboard);
          success = true;
      }
-@@ -873,10 +880,19 @@ void ExportManager::exportVideo(ExportManager::Actions actions, const QUrl &inpu
+@@ -880,10 +887,19 @@
          // This behavior has no relation to the setting in the config UI,
          // but it was added to solve this feature request:
          // https://bugs.kde.org/show_bug.cgi?id=357423
@@ -50,7 +49,6 @@ index 1b3a9ec9..af712698 100644
          copiedPath = true;
      }
 diff --git a/src/Gui/SettingsDialog/GeneralOptions.ui b/src/Gui/SettingsDialog/GeneralOptions.ui
-index 048639b8..b92affeb 100644
 --- a/src/Gui/SettingsDialog/GeneralOptions.ui
 +++ b/src/Gui/SettingsDialog/GeneralOptions.ui
 @@ -92,6 +92,11 @@
@@ -66,10 +64,9 @@ index 048639b8..b92affeb 100644
     </item>
     <item row="4" column="0" colspan="2">
 diff --git a/src/Gui/SettingsDialog/spectacle.kcfg b/src/Gui/SettingsDialog/spectacle.kcfg
-index 6674f986..b262ecfa 100644
 --- a/src/Gui/SettingsDialog/spectacle.kcfg
 +++ b/src/Gui/SettingsDialog/spectacle.kcfg
-@@ -40,6 +40,7 @@
+@@ -44,6 +48,7 @@
          <choice name="PostScreenshotDoNothing"></choice>
          <choice name="PostScreenshotCopyImage"></choice>
          <choice name="PostScreenshotCopyLocation"></choice>
@@ -78,10 +75,9 @@ index 6674f986..b262ecfa 100644
          <default>PostScreenshotDoNothing</default>
      </entry>
 diff --git a/src/SpectacleCore.cpp b/src/SpectacleCore.cpp
-index 809775f7..26dd06bd 100644
 --- a/src/SpectacleCore.cpp
 +++ b/src/SpectacleCore.cpp
-@@ -1315,7 +1315,8 @@ ExportManager::Actions SpectacleCore::autoExportActions() const
+@@ -1375,7 +1501,8 @@
      if (m_startMode != StartMode::Background) {
          save |= Settings::autoSaveImage();
          copyImage |= Settings::clipboardGroup() == Settings::PostScreenshotCopyImage && !m_videoMode;

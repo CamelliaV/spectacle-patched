@@ -24,13 +24,21 @@
 - 保存的是带小数的逻辑坐标，避免高 DPI 或分数缩放环境下因为取整产生 1-2 像素漂移。
 - 空区域或已完全离开当前屏幕范围的历史区域会被忽略。
 
+4. `空选区只截当前屏幕`
+- 矩形区域截图未拖选时，回车、双击或确认只截鼠标所在屏幕，不再合并整个多屏桌面。
+- 手动框选（包括跨屏选区）、`R` 恢复选区和“整个桌面”截图保持原行为。
+
 ## 补丁列表
 
-`PKGBUILD` 会在上游 tarball 上应用这些补丁：
+`PKGBUILD` 会在上游 tarball（当前为 Plasma 6.7.5）上应用这些补丁：
 
 - `copy-file-uri.patch`
 - `game-mode-shortcut-suppression.patch`
 - `restore-last-selection-rect.patch`
+- `empty-selection-current-screen.patch`
+
+原 `geometry-inverted-bounds.patch` 已删除：上游 6.7.x 自带同样的修复
+（`Geometry::rectBounded` 不再使用会触发断言的 `std::clamp`）。
 
 ## 构建与安装（Arch Linux）
 

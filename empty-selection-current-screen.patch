@@ -1,0 +1,64 @@
+diff --git a/src/Gui/CaptureOverlay.qml b/src/Gui/CaptureOverlay.qml
+--- a/src/Gui/CaptureOverlay.qml
++++ b/src/Gui/CaptureOverlay.qml
+@@ -29,10 +29,10 @@
+     readonly property AnnotationDocument document: annotationsLoader.item?.document ?? null
+     readonly property size rawSelectionSize: {
+         const logicalSize = SelectionEditor.selection.empty
+-            ? Qt.size(SelectionEditor.screensRect.width, SelectionEditor.screensRect.height)
++            ? Qt.size(root.viewportRect.width, root.viewportRect.height)
+             : SelectionEditor.selection.size
+         const scale = () => {
+-            if (Geometry.rectContains(root.viewportRect, SelectionEditor.selection.rect)) {
++            if (SelectionEditor.selection.empty || Geometry.rectContains(root.viewportRect, SelectionEditor.selection.rect)) {
+                 return contextWindow.devicePixelRatio
+             } else if (!SpectacleCore.videoMode) {
+                 return SpectacleCore.annotationDocument.imageDpr
+diff --git a/src/Gui/SelectionEditor.cpp b/src/Gui/SelectionEditor.cpp
+--- a/src/Gui/SelectionEditor.cpp
++++ b/src/Gui/SelectionEditor.cpp
+@@ -15,6 +16,7 @@
+ #include <KLocalizedString>
+ #include <KWindowSystem>
+ 
++#include <QCursor>
+ #include <QGuiApplication>
+ #include <QMouseEvent>
+ #include <QPainter>
+@@ -473,13 +475,35 @@
+     }
+ 
+     if (selectionRect.isEmpty()) {
+-        selectionRect = d->screensRect;
++        // An empty selection means the screen under the pointer, not the virtual desktop.
++        // Query the cursor here: mousePos may still be unset if Enter is pressed without moving.
++        const auto screen = QGuiApplication::screenAt(QCursor::pos());
++        if (!screen) {
++            return false;
++        }
++        selectionRect = G::mapFromPlatformRect(screen->geometry(), screen->devicePixelRatio()).intersected(d->screensRect);
++        if (selectionRect.isEmpty()) {
++            return false;
++        }
++    } else {
++        Settings::setLastSelectionRect(selectionRect);
+     }
+ 
+     Q_EMIT accepted(selectionRect, actions);
+     return true;
+ }
+ 
++bool SelectionEditor::restoreLastSelectionRect()
++{
++    const auto rect = SelectionRectUtils::restorableSelectionRect(Settings::lastSelectionRect(), d->screensRect);
++    if (rect.isEmpty()) {
++        return false;
++    }
++
++    d->selection->setRect(rect);
++    return true;
++}
++
+ void SelectionEditor::reset()
+ {
+     const auto windows = CaptureWindow::instances();
