@@ -1,0 +1,4491 @@
+diff --git a/.gitignore b/.gitignore
+index beed9c1b..3395e051 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -27,3 +27,7 @@ CMakeLists.txt.user*
+ /cmake-build*
+ .cache
+ .flatpak-builder
++
++# Python worker/test bytecode
++__pycache__/
++*.py[cod]
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2c18e002..84c67ef5 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -171,7 +171,9 @@ ecm_qt_install_logging_categories(EXPORT SPECTACLE FILE spectacle.categories DES
+ 
+ feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)
+ 
+-file(GLOB_RECURSE ALL_CLANG_FORMAT_SOURCE_FILES *.cpp *.h)
++file(GLOB_RECURSE ALL_CLANG_FORMAT_SOURCE_FILES src/*.cpp src/*.h tests/*.cpp tests/*.h kconf_update/*.cpp)
++# Preset build directories must not become formatter inputs in another build.
++list(FILTER ALL_CLANG_FORMAT_SOURCE_FILES EXCLUDE REGEX "/(build[^/]*|_deps)/")
+ kde_clang_format(${ALL_CLANG_FORMAT_SOURCE_FILES})
+ 
+ kde_configure_git_pre_commit_hook(CHECKS CLANG_FORMAT)
+diff --git a/src/CMakeLists.txt b/src/CMakeLists.txt
+index d3d49d56..dcfea3f5 100644
+--- a/src/CMakeLists.txt
++++ b/src/CMakeLists.txt
+@@ -26,7 +26,13 @@ target_sources(spectacle PRIVATE
+     ExportManager.cpp
+     Geometry.cpp
+     OcrManager.cpp
++    OcrUtils.cpp
++    MultilingualOcr.cpp
++    TesseractRuntimeLoader.cpp
+     Gui/CaptureWindow.cpp
++    Gui/OcrResultDialog.cpp
++    Gui/PinnedImageWindow.cpp
++    Gui/RegionDetector.cpp
+     Gui/ExportMenu.cpp
+     Gui/HelpMenu.cpp
+     Gui/InlineMessageModel.cpp
+@@ -173,6 +179,7 @@ qt_target_qml_sources(spectacle
+     Gui/Magnifier.qml
+     Gui/NewScreenshotToolButton.qml
+     Gui/OcrAction.qml
++    Gui/PinAction.qml
+     Gui/OptionsMenuButton.qml
+     Gui/Outline.qml
+     Gui/QmlUtils.qml
+@@ -195,3 +202,5 @@ qt_target_qml_sources(spectacle
+ )
+ 
+ install(TARGETS spectacle ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
++
++install(FILES Ocr/recognize.py Ocr/LICENSE.RapidOCR Ocr/THIRD_PARTY_NOTICES DESTINATION ${KDE_INSTALL_DATADIR}/spectacle/ocr)
+diff --git a/src/Gui/CaptureOverlay.qml b/src/Gui/CaptureOverlay.qml
+index f7401a77..70bed854 100644
+--- a/src/Gui/CaptureOverlay.qml
++++ b/src/Gui/CaptureOverlay.qml
+@@ -59,6 +59,37 @@ MouseArea {
+     anchors.fill: parent
+     enabled: !SpectacleCore.videoPlatform.isRecording
+ 
++    QQC.Label {
++        anchors.top: parent.top
++        anchors.horizontalCenter: parent.horizontalCenter
++        anchors.topMargin: Kirigami.Units.largeSpacing
++        z: 100
++        visible: !SpectacleCore.videoMode
++        text: SelectionEditor.candidateLabel
++        textFormat: Text.PlainText
++        padding: Kirigami.Units.mediumSpacing
++        color: palette.windowText
++        background: FloatingBackground {
++            color: palette.window
++        }
++    }
++
++    Shortcut {
++        sequence: "Tab"
++        enabled: root.activeFocus && !SpectacleCore.videoMode && (!root.document || root.document.tool.isNoTool)
++        onActivated: SelectionEditor.cycleCandidate(false)
++    }
++    Shortcut {
++        sequence: "Shift+Tab"
++        enabled: root.activeFocus && !SpectacleCore.videoMode && (!root.document || root.document.tool.isNoTool)
++        onActivated: SelectionEditor.cycleCandidate(true)
++    }
++    Shortcut {
++        sequence: "Ctrl+Shift+P"
++        enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty
++        onActivated: SpectacleCore.pinScreenshot()
++    }
++
+     AnimatedLoader {
+         id: annotationsLoader
+         anchors.fill: parent
+@@ -565,6 +596,13 @@ MouseArea {
+             ButtonGrid {
+                 spacing: parent.parent.spacing
+                 ToolBarSizeLabel {}
++                ToolButton {
++                    visible: !SpectacleCore.videoMode
++                    icon.name: "edit-select"
++                    text: SelectionEditor.candidateLabel
++                    display: TtToolButton.IconOnly
++                    onClicked: SelectionEditor.cycleCandidate(false)
++                }
+                 ToolButton {
+                     display: TtToolButton.TextBesideIcon
+                     visible: action.enabled
+@@ -593,9 +631,13 @@ MouseArea {
+                  
+                 ToolButton {
+                     display: TtToolButton.IconOnly
+-                    visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
++                    visible: !SpectacleCore.videoMode
+                     action: OcrAction {}
+                 }
++                ToolButton {
++                    display: TtToolButton.IconOnly
++                    action: PinAction { enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty }
++                }
+                  
+                 ExportMenuButton {
+                     focusPolicy: Qt.NoFocus
+@@ -607,6 +649,13 @@ MouseArea {
+             ButtonGrid {
+                 spacing: parent.parent.spacing
+                 ToolBarSizeLabel {}
++                ToolButton {
++                    visible: !SpectacleCore.videoMode
++                    icon.name: "edit-select"
++                    text: SelectionEditor.candidateLabel
++                    display: TtToolButton.IconOnly
++                    onClicked: SelectionEditor.cycleCandidate(false)
++                }
+                 ToolButton {
+                     visible: action.enabled
+                     action: AcceptAction {}
+@@ -629,9 +678,13 @@ MouseArea {
+                 }
+                  
+                 ToolButton {
+-                    visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
++                    visible: !SpectacleCore.videoMode
+                     action: OcrAction {}
+                 }
++                ToolButton {
++                    display: TtToolButton.IconOnly
++                    action: PinAction { enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty }
++                }
+                  
+                 ExportMenuButton {
+                     focusPolicy: Qt.NoFocus
+diff --git a/src/Gui/ExportMenu.cpp b/src/Gui/ExportMenu.cpp
+index a1a36131..adea7012 100644
+--- a/src/Gui/ExportMenu.cpp
++++ b/src/Gui/ExportMenu.cpp
+@@ -252,10 +252,6 @@ void ExportMenu::createOcrLanguageSubmenu()
+ 
+     auto ocrManager = OcrManager::instance();
+ 
+-    if (!ocrManager || !ocrManager->isAvailable()) {
+-        return;
+-    }
+-
+     m_ocrLanguageMenu = addMenu(i18nc("@action:menu", "Extract Text by Language"));
+     m_ocrLanguageMenu->setIcon(QIcon::fromTheme(u"document-scan"_s));
+ 
+@@ -318,6 +314,15 @@ void ExportMenu::buildOcrLanguageSubmenu()
+     }
+ 
+     setMenuEnabled(!busy);
++    auto automaticAction = m_ocrLanguageMenu->addAction(i18n("Chinese, English and Japanese (Automatic)"));
++    connect(automaticAction, &QAction::triggered, this, [this] {
++        triggerExtraction(QString());
++    });
++    auto combinedAction = m_ocrLanguageMenu->addAction(i18n("Configured Languages (%1)", ocrManager->currentLanguageCode()));
++    connect(combinedAction, &QAction::triggered, this, [this] {
++        triggerExtraction(OcrManager::instance()->currentLanguageCode());
++    });
++    m_ocrLanguageMenu->addSeparator();
+ 
+     for (auto it = languages.cbegin(); it != languages.cend(); ++it) {
+         const QString &code = it.key();
+diff --git a/src/Gui/OcrAction.qml b/src/Gui/OcrAction.qml
+index 1ce4b101..0ca62693 100644
+--- a/src/Gui/OcrAction.qml
++++ b/src/Gui/OcrAction.qml
+@@ -9,9 +9,8 @@ import org.kde.spectacle.private
+ 
+ T.Action {
+     enabled: !SpectacleCore.videoMode && 
+-             SpectacleCore.ocrAvailable && 
+              SpectacleCore.ocrStatus !== 1
+     icon.name: "document-scan"
+-    text: i18nc("@action", "Extract Text")
++    text: SpectacleCore.ocrStatus === 1 ? i18nc("@action", "Extracting Text…") : i18nc("@action", "Extract Text")
+     onTriggered: SpectacleCore.startOcrExtraction()
+ }
+diff --git a/src/Gui/OcrResultDialog.cpp b/src/Gui/OcrResultDialog.cpp
+new file mode 100644
+index 00000000..49d1dc8f
+--- /dev/null
++++ b/src/Gui/OcrResultDialog.cpp
+@@ -0,0 +1,89 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "OcrResultDialog.h"
++
++#include <KLocalizedString>
++#include <QApplication>
++#include <QClipboard>
++#include <QComboBox>
++#include <QDialogButtonBox>
++#include <QHBoxLayout>
++#include <QLabel>
++#include <QPushButton>
++#include <QTextEdit>
++#include <QVBoxLayout>
++
++OcrResultDialog::OcrResultDialog(QWidget *parent)
++    : QDialog(parent)
++    , mStatus(new QLabel(this))
++    , mText(new QTextEdit(this))
++    , mCopy(nullptr)
++    , mLanguages(new QComboBox(this))
++    , mRetry(new QPushButton(i18nc("@action:button", "Recognize Again"), this))
++{
++    setAttribute(Qt::WA_DeleteOnClose);
++    setWindowTitle(i18nc("@title:window", "Extracted Text"));
++    resize(640, 420);
++    auto layout = new QVBoxLayout(this);
++    mRetry->setObjectName(QStringLiteral("ocrRetryButton"));
++    mLanguages->setAccessibleName(i18n("Recognition language"));
++    mLanguages->addItem(i18n("Chinese, English and Japanese (Automatic)"), QString());
++    mLanguages->addItem(i18n("Simplified Chinese + English (Tesseract)"), QStringLiteral("chi_sim+eng"));
++    mLanguages->addItem(i18n("Traditional Chinese + English (Tesseract)"), QStringLiteral("chi_tra+eng"));
++    mLanguages->addItem(i18n("Japanese + English (Tesseract)"), QStringLiteral("jpn+eng"));
++    mLanguages->addItem(i18n("English (Tesseract)"), QStringLiteral("eng"));
++    auto languageRow = new QHBoxLayout;
++    languageRow->addWidget(mLanguages, 1);
++    languageRow->addWidget(mRetry);
++    layout->addLayout(languageRow);
++    connect(mRetry, &QPushButton::clicked, this, [this] {
++        if (!mImage.isNull()) {
++            Q_EMIT recognitionRequested(mImage, mLanguages->currentData().toString());
++        }
++    });
++    mStatus->setWordWrap(true);
++    mStatus->setTextFormat(Qt::PlainText);
++    mText->setAcceptRichText(false);
++    mText->setAccessibleName(i18n("Extracted text"));
++    layout->addWidget(mStatus);
++    layout->addWidget(mText);
++    auto buttons = new QDialogButtonBox(QDialogButtonBox::Close, this);
++    mCopy = buttons->addButton(i18nc("@action:button", "Copy Text"), QDialogButtonBox::ActionRole);
++    connect(mCopy, &QPushButton::clicked, this, [this] {
++        QApplication::clipboard()->setText(mText->toPlainText());
++    });
++    connect(mText, &QTextEdit::textChanged, this, [this] {
++        mCopy->setEnabled(!mText->toPlainText().isEmpty());
++    });
++    connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::close);
++    layout->addWidget(buttons);
++    setResult({}, i18n("Extracting text…"));
++}
++
++void OcrResultDialog::setResult(const QString &text, const QString &message)
++{
++    mStatus->setText(message);
++    mText->setPlainText(text);
++    mCopy->setEnabled(!text.isEmpty());
++    setBusy(false);
++}
++
++void OcrResultDialog::setSourceImage(const QImage &image, const QString &languageCode)
++{
++    mImage = image;
++    int index = mLanguages->findData(languageCode);
++    if (index < 0) {
++        mLanguages->addItem(i18n("Custom languages: %1", languageCode), languageCode);
++        index = mLanguages->count() - 1;
++    }
++    mLanguages->setCurrentIndex(index);
++    mRetry->setEnabled(!mImage.isNull());
++}
++
++void OcrResultDialog::setBusy(bool busy)
++{
++    mLanguages->setEnabled(!busy);
++    mRetry->setEnabled(!busy && !mImage.isNull());
++    mCopy->setEnabled(!busy && !mText->toPlainText().isEmpty());
++}
++
++#include "moc_OcrResultDialog.cpp"
+diff --git a/src/Gui/OcrResultDialog.h b/src/Gui/OcrResultDialog.h
+new file mode 100644
+index 00000000..46bae83a
+--- /dev/null
++++ b/src/Gui/OcrResultDialog.h
+@@ -0,0 +1,31 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#pragma once
++
++#include <QDialog>
++#include <QImage>
++
++class QLabel;
++class QTextEdit;
++class QPushButton;
++class QComboBox;
++
++class OcrResultDialog : public QDialog
++{
++    Q_OBJECT
++public:
++    explicit OcrResultDialog(QWidget *parent = nullptr);
++    void setResult(const QString &text, const QString &message);
++    void setSourceImage(const QImage &image, const QString &languageCode);
++    void setBusy(bool busy);
++
++Q_SIGNALS:
++    void recognitionRequested(const QImage &image, const QString &languageCode);
++
++private:
++    QLabel *mStatus;
++    QTextEdit *mText;
++    QPushButton *mCopy;
++    QComboBox *mLanguages;
++    QPushButton *mRetry;
++    QImage mImage;
++};
+diff --git a/src/Gui/PinAction.qml b/src/Gui/PinAction.qml
+new file mode 100644
+index 00000000..ac256866
+--- /dev/null
++++ b/src/Gui/PinAction.qml
+@@ -0,0 +1,10 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++import QtQuick.Templates as T
++import org.kde.spectacle.private
++
++T.Action {
++    enabled: !SpectacleCore.videoMode
++    icon.name: "window-pin"
++    text: i18nc("@action", "Pin Screenshot")
++    onTriggered: SpectacleCore.pinScreenshot()
++}
+diff --git a/src/Gui/PinnedImageWindow.cpp b/src/Gui/PinnedImageWindow.cpp
+new file mode 100644
+index 00000000..5ee7bf6d
+--- /dev/null
++++ b/src/Gui/PinnedImageWindow.cpp
+@@ -0,0 +1,178 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "PinnedImageWindow.h"
++
++#include <KLocalizedString>
++#include <KWindowSystem>
++#include <LayerShellQt/Window>
++#include <QApplication>
++#include <QClipboard>
++#include <QContextMenuEvent>
++#include <QMenu>
++#include <QMouseEvent>
++#include <QPainter>
++#include <QScreen>
++#include <QShortcut>
++#include <QTimer>
++#include <QWindow>
++
++PinnedImageWindow::PinnedImageWindow(const QImage &image, const QPoint &position, QScreen *targetScreen)
++    : QWidget(nullptr, Qt::Tool | Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint)
++    , mImage(image)
++    , mTargetScreen(targetScreen ? targetScreen : QGuiApplication::screenAt(position))
++    , mPosition(position)
++{
++    setAttribute(Qt::WA_DeleteOnClose);
++    setFocusPolicy(Qt::StrongFocus);
++    setWindowTitle(i18nc("@title:window", "Pinned Screenshot"));
++    setToolTip(i18n("Drag to move · Scroll to zoom · Double-click or Esc to close · Right-click for actions"));
++    new QShortcut(QKeySequence::Close, this, this, &QWidget::close);
++    new QShortcut(QKeySequence(Qt::Key_Escape), this, this, &QWidget::close);
++    new QShortcut(QKeySequence::Copy, this, this, [this] {
++        QApplication::clipboard()->setImage(mImage);
++    });
++
++    if (!mTargetScreen) {
++        mTargetScreen = QGuiApplication::primaryScreen();
++    }
++    setScreen(mTargetScreen);
++    // Create the QWindow, then configure its shell before it is mapped. A plain
++    // WindowStaysOnTopHint is insufficient on Wayland.
++    winId();
++    if (KWindowSystem::isPlatformWayland()) {
++        mLayerWindow = LayerShellQt::Window::get(windowHandle());
++        // A layer surface's output is chosen when it is created, not when its
++        // QWidget is moved. Bind the screenshot's screen before show().
++        mLayerWindow->setScreen(mTargetScreen);
++        mLayerWindow->setLayer(LayerShellQt::Window::LayerTop);
++        mLayerWindow->setAnchors(LayerShellQt::Window::Anchors::fromInt(LayerShellQt::Window::AnchorTop | LayerShellQt::Window::AnchorLeft));
++        mLayerWindow->setExclusiveZone(-1);
++        mLayerWindow->setKeyboardInteractivity(LayerShellQt::Window::KeyboardInteractivityOnDemand);
++        mLayerWindow->setActivateOnShow(true);
++        mLayerWindow->setCloseOnDismissed(true);
++        // KWin maps known scopes to window types. A custom scope becomes Normal
++        // and tiling scripts can adopt it; Utility is an interactive floating tool.
++        mLayerWindow->setScope(QStringLiteral("utility"));
++    }
++    const auto available = mTargetScreen->availableGeometry().size();
++    const auto logicalSize = mImage.deviceIndependentSize();
++    setZoom(qMin(1.0, qMin(available.width() / logicalSize.width(), available.height() / logicalSize.height())));
++    movePin(position);
++    show();
++    // The capture overlay is destroyed after constructing the pin. Request focus
++    // once that transition has finished, so Escape reaches the new window.
++    QTimer::singleShot(0, this, [this] {
++        activateWindow();
++        setFocus(Qt::OtherFocusReason);
++    });
++}
++
++void PinnedImageWindow::paintEvent(QPaintEvent *)
++{
++    QPainter painter(this);
++    painter.fillRect(rect(), palette().base());
++    painter.setRenderHint(QPainter::SmoothPixmapTransform);
++    painter.drawImage(rect(), mImage);
++    painter.setPen(palette().highlight().color());
++    painter.drawRect(rect().adjusted(0, 0, -1, -1));
++}
++
++void PinnedImageWindow::movePin(const QPoint &position)
++{
++    if (!mTargetScreen) {
++        close();
++        return;
++    }
++    const auto bounds = mTargetScreen->geometry();
++    mPosition = QPoint(qBound(bounds.left(), position.x(), qMax(bounds.left(), bounds.right() - width() + 1)),
++                       qBound(bounds.top(), position.y(), qMax(bounds.top(), bounds.bottom() - height() + 1)));
++    if (mLayerWindow) {
++        const auto offset = mPosition - bounds.topLeft();
++        mLayerWindow->setMargins(QMargins(offset.x(), offset.y(), 0, 0));
++        // Layer-shell margins are double-buffered. A repaint commits the surface;
++        // without one, the compositor keeps displaying the pin at its old position.
++        update();
++    } else {
++        move(mPosition);
++    }
++}
++
++void PinnedImageWindow::mousePressEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::LeftButton) {
++        activateWindow();
++        setFocus(Qt::MouseFocusReason);
++        mDragging = true;
++        mDragOffset = event->position().toPoint();
++        setCursor(Qt::ClosedHandCursor);
++    }
++}
++
++void PinnedImageWindow::mouseDoubleClickEvent(QMouseEvent *event)
++{
++    if (event->button() == Qt::LeftButton) {
++        mDragging = false;
++        event->accept();
++        close();
++    } else {
++        QWidget::mouseDoubleClickEvent(event);
++    }
++}
++
++void PinnedImageWindow::keyPressEvent(QKeyEvent *event)
++{
++    if (event->key() == Qt::Key_Escape) {
++        event->accept();
++        close();
++    } else {
++        QWidget::keyPressEvent(event);
++    }
++}
++
++void PinnedImageWindow::mouseMoveEvent(QMouseEvent *event)
++{
++    if (mDragging) {
++        // Relative motion also works on Wayland, where global positions can be
++        // synthetic. Margins move layer surfaces without asking for a WM move.
++        movePin(mPosition + event->position().toPoint() - mDragOffset);
++    }
++}
++
++void PinnedImageWindow::mouseReleaseEvent(QMouseEvent *)
++{
++    mDragging = false;
++    unsetCursor();
++}
++
++void PinnedImageWindow::setZoom(qreal zoom)
++{
++    mZoom = qBound(0.1, zoom, 4.0);
++    const auto size = (mImage.deviceIndependentSize() * mZoom).toSize().expandedTo(QSize(32, 32));
++    resize(size);
++    if (mLayerWindow) {
++        mLayerWindow->setDesiredSize(size);
++    }
++    movePin(mPosition);
++    update();
++}
++
++void PinnedImageWindow::wheelEvent(QWheelEvent *event)
++{
++    setZoom(mZoom * (event->angleDelta().y() > 0 ? 1.1 : 1 / 1.1));
++    event->accept();
++}
++
++void PinnedImageWindow::contextMenuEvent(QContextMenuEvent *event)
++{
++    QMenu menu(this);
++    menu.addAction(i18nc("@action", "Copy Image"), this, [this] {
++        QApplication::clipboard()->setImage(mImage);
++    });
++    menu.addAction(i18nc("@action", "Actual Size"), this, [this] {
++        setZoom(1);
++    });
++    menu.addSeparator();
++    menu.addAction(i18nc("@action", "Close"), this, &QWidget::close);
++    menu.exec(event->globalPos());
++}
++
++#include "moc_PinnedImageWindow.cpp"
+diff --git a/src/Gui/PinnedImageWindow.h b/src/Gui/PinnedImageWindow.h
+new file mode 100644
+index 00000000..fbc94c1b
+--- /dev/null
++++ b/src/Gui/PinnedImageWindow.h
+@@ -0,0 +1,41 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#pragma once
++
++#include <QEventLoopLocker>
++#include <QImage>
++#include <QPointer>
++#include <QWidget>
++
++namespace LayerShellQt
++{
++class Window;
++}
++
++class PinnedImageWindow : public QWidget
++{
++    Q_OBJECT
++public:
++    explicit PinnedImageWindow(const QImage &image, const QPoint &position, QScreen *targetScreen = nullptr);
++
++protected:
++    void paintEvent(QPaintEvent *event) override;
++    void mousePressEvent(QMouseEvent *event) override;
++    void mouseDoubleClickEvent(QMouseEvent *event) override;
++    void mouseMoveEvent(QMouseEvent *event) override;
++    void mouseReleaseEvent(QMouseEvent *event) override;
++    void wheelEvent(QWheelEvent *event) override;
++    void contextMenuEvent(QContextMenuEvent *event) override;
++    void keyPressEvent(QKeyEvent *event) override;
++
++private:
++    void setZoom(qreal zoom);
++    void movePin(const QPoint &position);
++    QImage mImage;
++    QEventLoopLocker mLoopLocker;
++    LayerShellQt::Window *mLayerWindow = nullptr;
++    QPointer<QScreen> mTargetScreen;
++    QPoint mPosition;
++    QPoint mDragOffset;
++    bool mDragging = false;
++    qreal mZoom = 1;
++};
+diff --git a/src/Gui/RegionDetector.cpp b/src/Gui/RegionDetector.cpp
+new file mode 100644
+index 00000000..bb5a89c6
+--- /dev/null
++++ b/src/Gui/RegionDetector.cpp
+@@ -0,0 +1,169 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "RegionDetector.h"
++
++#include <algorithm>
++#include <cmath>
++#include <opencv2/imgproc.hpp>
++
++namespace
++{
++qreal area(const QRectF &rect)
++{
++    return rect.width() * rect.height();
++}
++
++bool equivalent(const QRectF &a, const QRectF &b)
++{
++    const auto intersection = a.intersected(b);
++    const qreal overlap = area(intersection);
++    const qreal combined = area(a) + area(b) - overlap;
++    return combined > 0 && overlap / combined > 0.9;
++}
++
++struct Candidate {
++    QRectF rect;
++    bool panel;
++};
++
++RegionDetector::Detection detectViewport(const QImage &image, const QRectF &viewport)
++{
++    auto small = image;
++    if (qMax(small.width(), small.height()) > 2048) {
++        small = small.scaled(2048, 2048, Qt::KeepAspectRatio, Qt::SmoothTransformation);
++    }
++    small = small.convertToFormat(QImage::Format_Grayscale8);
++    cv::Mat gray(small.height(), small.width(), CV_8UC1, small.bits(), small.bytesPerLine());
++    const qreal sx = viewport.width() / small.width();
++    const qreal sy = viewport.height() / small.height();
++    QList<Candidate> candidates;
++    for (const auto &thresholds : {std::pair{40, 120}, std::pair{8, 24}}) {
++        cv::Mat edges;
++        cv::Canny(gray, edges, thresholds.first, thresholds.second);
++        for (const auto &kernel : {cv::Size(1, 1), cv::Size(9, 3), cv::Size(21, 11), cv::Size(31, 21)}) {
++            const bool panel = kernel.width == 1;
++            // The low-contrast pass is only for closed panels, not text noise.
++            if (thresholds.first == 8 && !panel) {
++                continue;
++            }
++            cv::Mat joined;
++            const cv::Size scaledKernel(qMax(1, qRound((panel ? 3 : kernel.width) / sx)), qMax(1, qRound((panel ? 3 : kernel.height) / sy)));
++            cv::morphologyEx(edges, joined, cv::MORPH_CLOSE, cv::getStructuringElement(cv::MORPH_RECT, scaledKernel));
++            std::vector<std::vector<cv::Point>> contours;
++            cv::findContours(joined, contours, cv::RETR_LIST, cv::CHAIN_APPROX_SIMPLE);
++            for (const auto &contour : contours) {
++                const auto box = cv::boundingRect(contour);
++                const qreal width = box.width * sx;
++                const qreal height = box.height * sy;
++                if (width < 32 || height < 16 || width * height < 600 || box.area() > small.width() * small.height() * 0.98) {
++                    continue;
++                }
++                // A closed panel has a substantial interior. Discard letter
++                // outlines and irregular, disconnected details in the panel pass.
++                if (panel) {
++                    std::vector<cv::Point> outline;
++                    cv::approxPolyDP(contour, outline, cv::arcLength(contour, true) * 0.02, true);
++                    if (std::abs(cv::contourArea(contour)) / box.area() < 0.7 || !cv::isContourConvex(outline)) {
++                        continue;
++                    }
++                }
++                QRectF rect(viewport.x() + box.x * sx, viewport.y() + box.y * sy, width, height);
++                if (!panel) {
++                    rect = rect.adjusted(-3, -3, 3, 3);
++                }
++                candidates.append({rect.intersected(viewport), panel});
++            }
++        }
++    }
++    // Preserve large panels before applying the budget. Previously the smallest
++    // 256 contours could crowd out the very content block the user wanted.
++    std::stable_sort(candidates.begin(), candidates.end(), [](const Candidate &a, const Candidate &b) {
++        return a.panel != b.panel ? a.panel : area(a.rect) > area(b.rect);
++    });
++    QList<QRectF> result;
++    RegionDetector::Detection detected;
++    int panels = 0;
++    int contents = 0;
++    for (const auto &candidate : candidates) {
++        int &count = candidate.panel ? panels : contents;
++        if (count >= 192 || std::any_of(result.cbegin(), result.cend(), [&candidate](const QRectF &other) {
++                return equivalent(candidate.rect, other);
++            })) {
++            continue;
++        }
++        result.append(candidate.rect);
++        (candidate.panel ? detected.panels : detected.contents).append(candidate.rect);
++        ++count;
++    }
++    return detected;
++}
++}
++
++RegionDetector::Detection RegionDetector::detectDetailed(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports)
++{
++    if (image.isNull() || canvasRect.isEmpty()) {
++        return {};
++    }
++    const auto screens = viewports.isEmpty() ? QList<QRectF>{canvasRect} : viewports;
++    const qreal sx = image.width() / canvasRect.width();
++    const qreal sy = image.height() / canvasRect.height();
++    Detection result;
++    for (const auto &screen : screens) {
++        const auto viewport = screen.intersected(canvasRect);
++        if (viewport.isEmpty()) {
++            continue;
++        }
++        const QRect pixels = QRectF((viewport.x() - canvasRect.x()) * sx, (viewport.y() - canvasRect.y()) * sy, viewport.width() * sx, viewport.height() * sy)
++                                 .toAlignedRect()
++                                 .intersected(image.rect());
++        if (pixels.isEmpty()) {
++            continue;
++        }
++        // Account for rounding the crop to pixels before mapping back to logical coordinates.
++        const QRectF actualViewport(canvasRect.x() + pixels.x() / sx, canvasRect.y() + pixels.y() / sy, pixels.width() / sx, pixels.height() / sy);
++        const auto detected = detectViewport(image.copy(pixels), actualViewport);
++        for (const auto &rect : detected.panels) {
++            result.panels.append(rect.intersected(viewport));
++        }
++        for (const auto &rect : detected.contents) {
++            result.contents.append(rect.intersected(viewport));
++        }
++    }
++    return result;
++}
++
++QList<QRectF> RegionDetector::detect(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports)
++{
++    const auto result = detectDetailed(image, canvasRect, viewports);
++    return result.panels + result.contents;
++}
++
++QList<QRectF> RegionDetector::candidatesAt(const QList<QRectF> &regions, const QPointF &point, const QRectF &selected)
++{
++    QList<QRectF> result;
++    for (const auto &rect : regions) {
++        if (!rect.isEmpty() && rect.contains(point)) {
++            result.append(rect);
++        }
++    }
++    std::stable_sort(result.begin(), result.end(), [](const QRectF &a, const QRectF &b) {
++        return area(a) < area(b);
++    });
++    QList<QRectF> unique;
++    for (const auto &rect : result) {
++        if (!std::any_of(unique.cbegin(), unique.cend(), [&rect](const QRectF &other) {
++                return equivalent(rect, other);
++            })) {
++            unique.append(rect);
++        }
++    }
++    if (!selected.isEmpty() && selected.contains(point)) {
++        unique.removeIf([&selected](const QRectF &rect) {
++            return equivalent(rect, selected);
++        });
++        unique.append(selected);
++        std::stable_sort(unique.begin(), unique.end(), [](const QRectF &a, const QRectF &b) {
++            return area(a) < area(b);
++        });
++    }
++    return unique;
++}
+diff --git a/src/Gui/RegionDetector.h b/src/Gui/RegionDetector.h
+new file mode 100644
+index 00000000..c64388a8
+--- /dev/null
++++ b/src/Gui/RegionDetector.h
+@@ -0,0 +1,19 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#pragma once
++
++#include <QImage>
++#include <QList>
++#include <QRectF>
++
++namespace RegionDetector
++{
++struct Detection {
++    QList<QRectF> panels;
++    QList<QRectF> contents;
++};
++Detection detectDetailed(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports = {});
++
++// Input pixels are mapped to the same logical canvas coordinates as selection.
++QList<QRectF> detect(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports = {});
++QList<QRectF> candidatesAt(const QList<QRectF> &regions, const QPointF &point, const QRectF &selected = {});
++}
+diff --git a/src/Gui/SelectionEditor.cpp b/src/Gui/SelectionEditor.cpp
+index 44b27e80..3678c969 100644
+--- a/src/Gui/SelectionEditor.cpp
++++ b/src/Gui/SelectionEditor.cpp
+@@ -7,16 +7,19 @@
+ #include "SelectionEditor.h"
+ 
+ #include "CaptureWindow.h"
++#include "DebugUtils.h"
++#include "Geometry.h"
++#include "MultilingualOcr.h"
++#include "RegionDetector.h"
+ #include "Selection.h"
+ #include "SelectionRectUtils.h"
+-#include "Geometry.h"
+ #include "settings.h"
+-#include "DebugUtils.h"
+ 
+ #include <KLocalizedString>
+ #include <KWindowSystem>
+ 
+ #include <QCursor>
++#include <QFutureWatcher>
+ #include <QGuiApplication>
+ #include <QMouseEvent>
+ #include <QPainter>
+@@ -26,6 +29,7 @@
+ #include <QQuickItem>
+ #include <QQuickWindow>
+ #include <QScreen>
++#include <QtConcurrentRun>
+ #include <QtMath>
+ #include <qnamespace.h>
+ 
+@@ -127,6 +131,16 @@ public:
+ 
+     const std::unique_ptr<Selection> selection;
+ 
++    QList<QRectF> detectedRegions;
++    QList<QRectF> screenRegions;
++    QList<QRectF> candidates;
++    int candidateIndex = -1;
++    quint64 detectionGeneration = 0;
++    bool detecting = false;
++    int mPendingDetections = 0;
++    RegionDetector::Detection mFastRegions;
++    QList<QRectF> mTextRegions;
++    QPointF candidateAnchor;
+     QPointF startPos;
+     QPointF initialTopLeft;
+     QPointF initialMouseOffset;
+@@ -501,6 +515,8 @@ bool SelectionEditor::restoreLastSelectionRect()
+     }
+ 
+     d->selection->setRect(rect);
++    d->candidateIndex = -1;
++    Q_EMIT candidatesChanged();
+     return true;
+ }
+ 
+@@ -518,10 +534,17 @@ void SelectionEditor::reset()
+         Q_EMIT devicePixelRatioChanged();
+     }
+ 
++    d->screenRegions.clear();
++    d->candidateIndex = -1;
++    d->candidates.clear();
++    d->mousePos = G::mapFromPlatformPoint(QCursor::pos(), dpr);
+     QRectF rect;
+     for (auto window : windows) {
+-        rect |= Geometry::mapFromPlatformRect(window->geometry(), dpr);
++        const auto screenRect = Geometry::mapFromPlatformRect(window->geometry(), window->devicePixelRatio());
++        d->screenRegions.append(screenRect);
++        rect |= screenRect;
+     }
++    Q_EMIT candidatesChanged();
+     if (d->screensRect != rect) {
+         d->screensRect = rect;
+         Q_EMIT screensRectChanged();
+@@ -539,6 +562,126 @@ void SelectionEditor::reset()
+     }
+ }
+ 
++void SelectionEditor::detectRegions(const QImage &image, const QRectF &canvasRect)
++{
++    const auto generation = ++d->detectionGeneration;
++    d->detectedRegions.clear();
++    d->mFastRegions = {};
++    d->mTextRegions.clear();
++    d->candidates.clear();
++    d->candidateIndex = -1;
++    d->detecting = !image.isNull();
++    const bool useTextDetection = !image.isNull() && MultilingualOcr::isAvailable();
++    d->mPendingDetections = image.isNull() ? 0 : useTextDetection ? 2 : 1;
++    Q_EMIT candidatesChanged();
++    if (image.isNull()) {
++        return;
++    }
++    QList<QRectF> viewports;
++    for (auto screen : QGuiApplication::screens()) {
++        viewports.append(G::mapFromPlatformRect(screen->geometry(), screen->devicePixelRatio()).intersected(canvasRect));
++    }
++    // Fast image contours become usable immediately; text detection fills in
++    // borderless paragraphs/code blocks without blocking the capture overlay.
++    const auto finish = [this, generation](const RegionDetector::Detection &fastRegions, const QList<QRectF> &textRegions, bool textReady) {
++        if (generation != d->detectionGeneration) {
++            return;
++        }
++        if (textReady) {
++            d->mTextRegions = textRegions;
++        } else {
++            d->mFastRegions = fastRegions;
++        }
++        d->detectedRegions = d->mFastRegions.panels;
++        for (const auto &rough : d->mFastRegions.contents) {
++            const bool coveredByText = std::any_of(d->mTextRegions.cbegin(), d->mTextRegions.cend(), [&rough](const QRectF &text) {
++                const auto overlap = rough.intersected(text);
++                return overlap.width() * overlap.height() >= rough.width() * rough.height() * 0.4;
++            });
++            if (!coveredByText) {
++                d->detectedRegions.append(rough);
++            }
++        }
++        d->detectedRegions.append(d->mTextRegions);
++        d->detecting = --d->mPendingDetections > 0;
++        if (d->candidateIndex >= 0) {
++            auto available = d->detectedRegions;
++            available.append(d->screenRegions);
++            const auto selected = d->selection->rectF();
++            d->candidates = RegionDetector::candidatesAt(available, d->candidateAnchor, selected);
++            d->candidateIndex = d->candidates.indexOf(selected);
++        }
++        Q_EMIT candidatesChanged();
++    };
++    auto fast = new QFutureWatcher<RegionDetector::Detection>(this);
++    connect(fast, &QFutureWatcherBase::finished, this, [fast, finish] {
++        finish(fast->result(), {}, false);
++        fast->deleteLater();
++    });
++    fast->setFuture(QtConcurrent::run([image, canvasRect, viewports] {
++        try {
++            return RegionDetector::detectDetailed(image, canvasRect, viewports);
++        } catch (const std::exception &error) {
++            qWarning() << "Region detection failed:" << error.what();
++            return RegionDetector::Detection{};
++        }
++    }));
++    if (useTextDetection) {
++        auto text = new QFutureWatcher<MultilingualOcr::RegionResult>(this);
++        connect(text, &QFutureWatcherBase::finished, this, [text, finish] {
++            const auto result = text->result();
++            if (!result.success && !result.error.isEmpty()) {
++                qWarning() << result.error;
++            }
++            finish({}, result.regions, true);
++            text->deleteLater();
++        });
++        text->setFuture(QtConcurrent::run([image, canvasRect, viewports] {
++            return MultilingualOcr::detectTextRegions(image, canvasRect, viewports);
++        }));
++    }
++}
++
++bool SelectionEditor::detectingRegions() const
++{
++    return d->detecting;
++}
++
++QString SelectionEditor::candidateLabel() const
++{
++    if (d->candidateIndex >= 0) {
++        const auto label = i18n("Region %1 of %2 · Tab / Shift+Tab", d->candidateIndex + 1, d->candidates.size());
++        return d->detecting ? label + i18n(" (finding more…)") : label;
++    }
++    if (d->detecting) {
++        return i18n("Finding content regions… · Tab to select available regions");
++    }
++    return i18n("Tab: Select a region under the pointer");
++}
++
++bool SelectionEditor::cycleCandidate(bool reverse)
++{
++    if (d->disableArrowKeys) {
++        return false;
++    }
++    if (d->candidateIndex < 0 || (d->mousePos - d->candidateAnchor).manhattanLength() > 8) {
++        d->candidateAnchor = d->mousePos;
++        auto regions = d->detectedRegions;
++        regions.append(d->screenRegions);
++        d->candidates = RegionDetector::candidatesAt(regions, d->candidateAnchor);
++        d->candidateIndex = reverse ? 0 : -1;
++    }
++    if (d->candidates.isEmpty()) {
++        d->candidateIndex = -1;
++        Q_EMIT candidatesChanged();
++        return false;
++    }
++    d->candidateIndex = (d->candidateIndex + (reverse ? -1 : 1) + d->candidates.size()) % d->candidates.size();
++    d->selection->setRect(d->candidates.at(d->candidateIndex));
++    Q_EMIT candidatesChanged();
++    return true;
++}
++
+ bool SelectionEditor::eventFilter(QObject *watched, QEvent *event)
+ {
+     auto *item = qobject_cast<QQuickItem *>(watched);
+@@ -589,6 +732,8 @@ void SelectionEditor::keyPressEvent(QQuickItem *item, QKeyEvent *event)
+     case Qt::Key_Right:
+     case Qt::Key_Down:
+     case Qt::Key_Left:
++        d->candidateIndex = -1;
++        Q_EMIT candidatesChanged();
+         d->handleArrowKey(event);
+         d->setShowMagnifier(event->modifiers().testFlag(Qt::ShiftModifier));
+         event->accept();
+@@ -653,6 +798,8 @@ void SelectionEditor::mousePressEvent(QQuickItem *item, QMouseEvent *event)
+     }
+ 
+     if (event->button() & (Qt::LeftButton | Qt::RightButton)) {
++        d->candidateIndex = -1;
++        Q_EMIT candidatesChanged();
+         if (event->button() & Qt::RightButton) {
+             d->selection->setRect({});
+         }
+diff --git a/src/Gui/SelectionEditor.h b/src/Gui/SelectionEditor.h
+index 16ef6ee9..e2945618 100644
+--- a/src/Gui/SelectionEditor.h
++++ b/src/Gui/SelectionEditor.h
+@@ -32,6 +32,8 @@ class SelectionEditor : public QObject
+     QML_ELEMENT
+     QML_SINGLETON
+ 
++    Q_PROPERTY(bool detectingRegions READ detectingRegions NOTIFY candidatesChanged FINAL)
++    Q_PROPERTY(QString candidateLabel READ candidateLabel NOTIFY candidatesChanged FINAL)
+     Q_PROPERTY(Selection *selection READ selection CONSTANT FINAL)
+     Q_PROPERTY(qreal devicePixelRatio READ devicePixelRatio NOTIFY devicePixelRatioChanged FINAL)
+     Q_PROPERTY(QRectF screensRect READ screensRect NOTIFY screensRectChanged FINAL)
+@@ -85,6 +87,10 @@ public:
+     Q_SLOT bool restoreLastSelectionRect();
+ 
+     void reset();
++    void detectRegions(const QImage &image, const QRectF &canvasRect);
++    bool detectingRegions() const;
++    QString candidateLabel() const;
++    Q_INVOKABLE bool cycleCandidate(bool reverse = false);
+ 
+     static SelectionEditor *create(QQmlEngine *engine, QJSEngine *)
+     {
+@@ -96,6 +102,7 @@ public:
+     }
+ 
+ Q_SIGNALS:
++    void candidatesChanged();
+     void devicePixelRatioChanged();
+     void screensRectChanged();
+     void dragLocationChanged();
+diff --git a/src/Gui/SettingsDialog/GeneralOptions.ui b/src/Gui/SettingsDialog/GeneralOptions.ui
+index 25a36018..852439c0 100644
+--- a/src/Gui/SettingsDialog/GeneralOptions.ui
++++ b/src/Gui/SettingsDialog/GeneralOptions.ui
+@@ -277,7 +277,7 @@
+    <item row="16" column="0">
+     <widget class="QLabel" name="ocrLanguageLabel">
+      <property name="text">
+-      <string>Languages for OCR:</string>
++      <string>Languages for manual OCR (Tesseract):</string>
+      </property>
+     </widget>
+    </item>
+diff --git a/src/Gui/SettingsDialog/GeneralOptionsPage.cpp b/src/Gui/SettingsDialog/GeneralOptionsPage.cpp
+index 82bd8b38..d29a5426 100644
+--- a/src/Gui/SettingsDialog/GeneralOptionsPage.cpp
++++ b/src/Gui/SettingsDialog/GeneralOptionsPage.cpp
+@@ -46,6 +46,7 @@ GeneralOptionsPage::GeneralOptionsPage(QWidget *parent)
+             const bool busy = status == OcrManager::OcrStatus::Processing;
+             m_ui->ocrLanguageLabel->setEnabled(!busy);
+             m_ui->ocrLanguageScrollArea->setEnabled(!busy);
++            refreshOcrLanguageSettings(false);
+         };
+ 
+         connect(ocrManager, &OcrManager::statusChanged, this, updateProcessingUiState);
+diff --git a/src/Gui/SettingsDialog/OcrLanguageSelector.cpp b/src/Gui/SettingsDialog/OcrLanguageSelector.cpp
+index 8165692c..662bce0b 100644
+--- a/src/Gui/SettingsDialog/OcrLanguageSelector.cpp
++++ b/src/Gui/SettingsDialog/OcrLanguageSelector.cpp
+@@ -12,6 +12,7 @@
+ #include <KLocalizedString>
+ 
+ #include <QCheckBox>
++#include <QLabel>
+ #include <QSignalBlocker>
+ #include <QVBoxLayout>
+ 
+@@ -65,26 +66,21 @@ void OcrLanguageSelector::setSelectedLanguages(const QStringList &languages)
+ 
+ bool OcrLanguageSelector::isDefault() const
+ {
+-    const QStringList current = selectedLanguages();
+-
+-    // Default state is exactly one language selected
+-    if (current.size() != 1) {
+-        return false;
+-    }
+-
+-    QCheckBox *defaultCheckbox = findDefaultCheckbox();
+-
+-    if (defaultCheckbox) {
+-        QString defaultLangCode = defaultCheckbox->property("languageCode").toString();
+-        return current.contains(defaultLangCode);
+-    }
+-
+-    return false;
++    auto current = selectedLanguages();
++    auto defaults = m_ocrManager->defaultLanguages();
++    current.sort();
++    defaults.sort();
++    return current == defaults;
+ }
+ 
+ bool OcrLanguageSelector::hasChanges() const
+ {
+-    return selectedLanguages() != Settings::ocrLanguages();
++    auto selected = selectedLanguages();
++    auto configured = Settings::ocrLanguages();
++    configured.removeAll(u"osd"_s);
++    selected.sort();
++    configured.sort();
++    return selected != configured;
+ }
+ 
+ void OcrLanguageSelector::applyDefaults()
+@@ -98,24 +94,9 @@ void OcrLanguageSelector::applyDefaults()
+         return;
+     }
+ 
+-    QSignalBlocker blocker(this);
+-
+-    QCheckBox *defaultCheckbox = findDefaultCheckbox();
+-
+-    for (QCheckBox *checkbox : m_languageCheckboxes) {
+-        QSignalBlocker checkboxBlocker(checkbox);
+-        checkbox->setChecked(checkbox == defaultCheckbox);
+-    }
+-
+-    const int selectedCount = defaultCheckbox ? 1 : 0;
+-    updateCheckboxEnabledStates(selectedCount);
+-
+-    QStringList selected;
+-    if (defaultCheckbox) {
+-        selected.append(defaultCheckbox->property("languageCode").toString());
+-    }
+-
+-    Q_EMIT selectedLanguagesChanged(selected);
++    const auto defaults = m_ocrManager->defaultLanguages();
++    setSelectedLanguages(defaults);
++    Q_EMIT selectedLanguagesChanged(selectedLanguages());
+ }
+ 
+ void OcrLanguageSelector::refresh()
+@@ -212,6 +193,11 @@ void OcrLanguageSelector::setupLanguageCheckboxes()
+         return;
+     }
+ 
++    auto description =
++        new QLabel(i18n("The toolbar recognizes Chinese, English and Japanese automatically. These language settings apply to manual Tesseract recognition."),
++                   this);
++    description->setWordWrap(true);
++    m_layout->addWidget(description);
+     const QMap<QString, QString> availableLanguages = m_ocrManager->availableLanguagesWithNames();
+ 
+     if (availableLanguages.isEmpty()) {
+@@ -232,6 +218,17 @@ void OcrLanguageSelector::setupLanguageCheckboxes()
+         m_languageCheckboxes.append(checkbox);
+     }
+ 
++    QStringList missing;
++    for (const auto &code : {u"eng"_s, u"chi_sim"_s, u"jpn"_s}) {
++        if (!availableLanguages.contains(code)) {
++            missing.append(code);
++        }
++    }
++    if (!missing.isEmpty()) {
++        auto hint = new QLabel(i18n("For Chinese, English, and Japanese recognition, install the missing language packs: %1", missing.join(u", "_s)), this);
++        hint->setWordWrap(true);
++        m_layout->addWidget(hint);
++    }
+     if (m_layout->count() > 0) {
+         m_layout->addStretch();
+     }
+diff --git a/src/Gui/SettingsDialog/spectacle.kcfg b/src/Gui/SettingsDialog/spectacle.kcfg
+index e49e8f42..60667a97 100644
+--- a/src/Gui/SettingsDialog/spectacle.kcfg
++++ b/src/Gui/SettingsDialog/spectacle.kcfg
+@@ -80,7 +80,7 @@
+     </entry>
+     <entry name="ocrLanguages" type="StringList">
+         <label>Default languages for OCR text recognition</label>
+-        <default>eng</default>
++        <default>chi_sim,eng,jpn,chi_tra</default>
+     </entry>
+ </group>
+ <group name="GuiConfig">
+diff --git a/src/Gui/ShortcutsTextBox.qml b/src/Gui/ShortcutsTextBox.qml
+index 970f2c40..de89e843 100644
+--- a/src/Gui/ShortcutsTextBox.qml
++++ b/src/Gui/ShortcutsTextBox.qml
+@@ -25,6 +25,10 @@ FloatingBackground {
+             t += '\n'
+             t += '\n' + i18n("Reset selection:")
+         }
++        if (!SpectacleCore.videoMode) {
++            t += '\n' + i18n("Select suggested region:")
++            t += '\n' + i18n("Pin selected region:")
++        }
+         t += '\n' + i18n("Cancel:")
+         return t
+     }
+@@ -45,6 +49,10 @@ FloatingBackground {
+             t += '\n' + i18nc("Keyboard action", "+ Shift: Resize in 1 pixel steps")
+             t += '\n' + i18nc("Mouse action", "Right-click")
+         }
++        if (!SpectacleCore.videoMode) {
++            t += '\n' + i18nc("Keyboard action", "Tab / Shift+Tab")
++            t += '\n' + i18nc("Keyboard action", "Ctrl+Shift+P")
++        }
+         t += '\n' + i18nc("Keyboard action", "Escape")
+         return t
+     }
+diff --git a/src/Gui/ViewerPage.qml b/src/Gui/ViewerPage.qml
+index 4d6f6f3a..c0145e9f 100644
+--- a/src/Gui/ViewerPage.qml
++++ b/src/Gui/ViewerPage.qml
+@@ -63,9 +63,14 @@ EmptyPage {
+              
+             TtToolButton {
+                 display: TtToolButton.IconOnly
+-                visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
++                visible: !SpectacleCore.videoMode
+                 action: OcrAction {}
+             }
++            TtToolButton {
++                display: TtToolButton.IconOnly
++                visible: !SpectacleCore.videoMode
++                action: PinAction {}
++            }
+              
+             // We only show this in video mode to save space in screenshot mode
+             TtToolButton {
+diff --git a/src/MultilingualOcr.cpp b/src/MultilingualOcr.cpp
+new file mode 100644
+index 00000000..b203380a
+--- /dev/null
++++ b/src/MultilingualOcr.cpp
+@@ -0,0 +1,167 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "MultilingualOcr.h"
++
++#include <KLocalizedString>
++#include <QDir>
++#include <QFileInfo>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QProcess>
++#include <QStandardPaths>
++#include <QTemporaryDir>
++#include <cmath>
++
++using namespace Qt::StringLiterals;
++
++namespace
++{
++QString helperPath()
++{
++    if (qEnvironmentVariableIsSet("SPECTACLE_OCR_HELPER")) {
++        return qEnvironmentVariable("SPECTACLE_OCR_HELPER");
++    }
++    return QStandardPaths::locate(QStandardPaths::GenericDataLocation, u"spectacle/ocr/recognize.py"_s);
++}
++
++QString assetsPath()
++{
++    return qEnvironmentVariable("SPECTACLE_OCR_ASSETS", QFileInfo(helperPath()).absolutePath());
++}
++}
++
++bool MultilingualOcr::isAvailable()
++{
++    if (!QFileInfo::exists(helperPath()) || QStandardPaths::findExecutable(u"python3"_s).isEmpty()) {
++        return false;
++    }
++    const QDir assets(assetsPath());
++    for (const auto &file : {u"vendor/rapidocr/__init__.py"_s,
++                             u"vendor/cv2/__init__.py"_s,
++                             u"models/ch_PP-OCRv5_det_mobile.onnx"_s,
++                             u"models/ch_PP-OCRv5_rec_server.onnx"_s,
++                             u"models/en_PP-OCRv5_rec_mobile.onnx"_s,
++                             u"models/ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx"_s}) {
++        if (!QFileInfo::exists(assets.filePath(file))) {
++            return false;
++        }
++    }
++    return true;
++}
++
++MultilingualOcr::Result MultilingualOcr::recognize(const QImage &image)
++{
++    if (image.isNull()) {
++        return {{}, i18n("No image to recognize."), false};
++    }
++    if (!isAvailable()) {
++        return {{}, i18n("The multilingual OCR models are not installed."), false};
++    }
++    QTemporaryDir directory;
++    const auto input = directory.filePath(u"screenshot.png"_s);
++    if (!directory.isValid() || !image.save(input)) {
++        return {{}, i18n("Could not prepare the screenshot for text recognition."), false};
++    }
++    // Run entirely locally and off the GUI thread. The private temporary image
++    // is removed after the child has exited, including failures and timeouts.
++    QProcess process;
++    process.start(QStandardPaths::findExecutable(u"python3"_s), {helperPath(), u"--assets"_s, assetsPath(), input});
++    if (!process.waitForStarted(5000)) {
++        return {{}, i18n("Could not start multilingual text recognition."), false};
++    }
++    if (!process.waitForFinished(60000)) {
++        process.kill();
++        process.waitForFinished();
++        return {{}, i18n("Multilingual text recognition timed out. Try a smaller region."), false};
++    }
++    const auto output = QJsonDocument::fromJson(process.readAllStandardOutput()).object();
++    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || output.value(u"version"_s).toInt() != 1
++        || !output.value(u"success"_s).toBool() || !output.value(u"text"_s).isString()) {
++        auto detail = output.value(u"error"_s).toString();
++        if (detail.isEmpty()) {
++            detail = QString::fromUtf8(process.readAllStandardError()).right(1000).trimmed();
++        }
++        return {{}, i18n("Multilingual text recognition failed: %1", detail), false};
++    }
++    // Leading spaces can be reconstructed command/code indentation.
++    return {output.value(u"text"_s).toString(), {}, true};
++}
++
++MultilingualOcr::RegionResult MultilingualOcr::detectTextRegions(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports)
++{
++    if (image.isNull() || canvasRect.isEmpty() || !isAvailable()) {
++        return {};
++    }
++    const qreal sx = image.width() / canvasRect.width();
++    const qreal sy = image.height() / canvasRect.height();
++    const auto screens = viewports.isEmpty() ? QList<QRectF>{canvasRect} : viewports;
++    QJsonArray slices;
++    for (const auto &screen : screens) {
++        const auto viewport = screen.intersected(canvasRect);
++        const auto pixels = QRectF((viewport.x() - canvasRect.x()) * sx, (viewport.y() - canvasRect.y()) * sy, viewport.width() * sx, viewport.height() * sy)
++                                .toAlignedRect()
++                                .intersected(image.rect());
++        if (!pixels.isEmpty()) {
++            slices.append(QJsonArray{pixels.x(), pixels.y(), pixels.width(), pixels.height()});
++        }
++    }
++    if (slices.isEmpty()) {
++        return {};
++    }
++    QTemporaryDir directory;
++    const auto input = directory.filePath(u"regions.png"_s);
++    if (!directory.isValid() || !image.save(input)) {
++        return {{}, i18n("Could not prepare region detection."), false};
++    }
++    QProcess process;
++    process.start(QStandardPaths::findExecutable(u"python3"_s),
++                  {helperPath(),
++                   u"--assets"_s,
++                   assetsPath(),
++                   u"--regions"_s,
++                   u"--viewports"_s,
++                   QString::fromUtf8(QJsonDocument(slices).toJson(QJsonDocument::Compact)),
++                   input});
++    if (!process.waitForStarted(5000) || !process.waitForFinished(15000)) {
++        process.kill();
++        process.waitForFinished();
++        return {{}, i18n("Text region detection did not finish."), false};
++    }
++    const auto output = QJsonDocument::fromJson(process.readAllStandardOutput()).object();
++    if (process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0 || output.value(u"version"_s).toInt() != 1
++        || !output.value(u"success"_s).toBool() || !output.value(u"regions"_s).isArray()) {
++        return {{}, output.value(u"error"_s).toString(i18n("Text region detection failed.")), false};
++    }
++    QList<QRectF> regions;
++    const auto detected = output.value(u"regions"_s).toArray();
++    for (const auto &value : detected) {
++        const auto coordinates = value.toArray();
++        if (coordinates.size() != 4) {
++            continue;
++        }
++        bool valid = true;
++        for (const auto &coordinate : coordinates) {
++            valid &= coordinate.isDouble() && std::isfinite(coordinate.toDouble());
++        }
++        if (!valid || coordinates[2].toDouble() <= 0 || coordinates[3].toDouble() <= 0) {
++            continue;
++        }
++        QRectF rect(canvasRect.x() + coordinates[0].toDouble() / sx,
++                    canvasRect.y() + coordinates[1].toDouble() / sy,
++                    coordinates[2].toDouble() / sx,
++                    coordinates[3].toDouble() / sy);
++        for (const auto &screen : screens) {
++            if (screen.contains(rect.center())) {
++                rect = rect.intersected(screen).intersected(canvasRect);
++                if (!rect.isEmpty()) {
++                    regions.append(rect);
++                }
++                break;
++            }
++        }
++        if (regions.size() >= 2000) {
++            break;
++        }
++    }
++    return {regions, {}, true};
++}
+diff --git a/src/MultilingualOcr.h b/src/MultilingualOcr.h
+new file mode 100644
+index 00000000..b8bf44ab
+--- /dev/null
++++ b/src/MultilingualOcr.h
+@@ -0,0 +1,26 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#pragma once
++
++#include <QImage>
++#include <QList>
++#include <QRectF>
++#include <QString>
++
++namespace MultilingualOcr
++{
++struct Result {
++    QString text;
++    QString error;
++    bool success = false;
++};
++
++struct RegionResult {
++    QList<QRectF> regions;
++    QString error;
++    bool success = false;
++};
++
++bool isAvailable();
++Result recognize(const QImage &image);
++RegionResult detectTextRegions(const QImage &image, const QRectF &canvasRect, const QList<QRectF> &viewports);
++}
+diff --git a/src/Ocr/LICENSE.RapidOCR b/src/Ocr/LICENSE.RapidOCR
+new file mode 100644
+index 00000000..ab68e50a
+--- /dev/null
++++ b/src/Ocr/LICENSE.RapidOCR
+@@ -0,0 +1,203 @@
++Copyright (c) 2021 RapidOCR Authors. All rights reserved.
++
++                                 Apache License
++                           Version 2.0, January 2004
++                        http://www.apache.org/licenses/
++
++   TERMS AND CONDITIONS FOR USE, REPRODUCTION, AND DISTRIBUTION
++
++   1. Definitions.
++
++      "License" shall mean the terms and conditions for use, reproduction,
++      and distribution as defined by Sections 1 through 9 of this document.
++
++      "Licensor" shall mean the copyright owner or entity authorized by
++      the copyright owner that is granting the License.
++
++      "Legal Entity" shall mean the union of the acting entity and all
++      other entities that control, are controlled by, or are under common
++      control with that entity. For the purposes of this definition,
++      "control" means (i) the power, direct or indirect, to cause the
++      direction or management of such entity, whether by contract or
++      otherwise, or (ii) ownership of fifty percent (50%) or more of the
++      outstanding shares, or (iii) beneficial ownership of such entity.
++
++      "You" (or "Your") shall mean an individual or Legal Entity
++      exercising permissions granted by this License.
++
++      "Source" form shall mean the preferred form for making modifications,
++      including but not limited to software source code, documentation
++      source, and configuration files.
++
++      "Object" form shall mean any form resulting from mechanical
++      transformation or translation of a Source form, including but
++      not limited to compiled object code, generated documentation,
++      and conversions to other media types.
++
++      "Work" shall mean the work of authorship, whether in Source or
++      Object form, made available under the License, as indicated by a
++      copyright notice that is included in or attached to the work
++      (an example is provided in the Appendix below).
++
++      "Derivative Works" shall mean any work, whether in Source or Object
++      form, that is based on (or derived from) the Work and for which the
++      editorial revisions, annotations, elaborations, or other modifications
++      represent, as a whole, an original work of authorship. For the purposes
++      of this License, Derivative Works shall not include works that remain
++      separable from, or merely link (or bind by name) to the interfaces of,
++      the Work and Derivative Works thereof.
++
++      "Contribution" shall mean any work of authorship, including
++      the original version of the Work and any modifications or additions
++      to that Work or Derivative Works thereof, that is intentionally
++      submitted to Licensor for inclusion in the Work by the copyright owner
++      or by an individual or Legal Entity authorized to submit on behalf of
++      the copyright owner. For the purposes of this definition, "submitted"
++      means any form of electronic, verbal, or written communication sent
++      to the Licensor or its representatives, including but not limited to
++      communication on electronic mailing lists, source code control systems,
++      and issue tracking systems that are managed by, or on behalf of, the
++      Licensor for the purpose of discussing and improving the Work, but
++      excluding communication that is conspicuously marked or otherwise
++      designated in writing by the copyright owner as "Not a Contribution."
++
++      "Contributor" shall mean Licensor and any individual or Legal Entity
++      on behalf of whom a Contribution has been received by Licensor and
++      subsequently incorporated within the Work.
++
++   2. Grant of Copyright License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      copyright license to reproduce, prepare Derivative Works of,
++      publicly display, publicly perform, sublicense, and distribute the
++      Work and such Derivative Works in Source or Object form.
++
++   3. Grant of Patent License. Subject to the terms and conditions of
++      this License, each Contributor hereby grants to You a perpetual,
++      worldwide, non-exclusive, no-charge, royalty-free, irrevocable
++      (except as stated in this section) patent license to make, have made,
++      use, offer to sell, sell, import, and otherwise transfer the Work,
++      where such license applies only to those patent claims licensable
++      by such Contributor that are necessarily infringed by their
++      Contribution(s) alone or by combination of their Contribution(s)
++      with the Work to which such Contribution(s) was submitted. If You
++      institute patent litigation against any entity (including a
++      cross-claim or counterclaim in a lawsuit) alleging that the Work
++      or a Contribution incorporated within the Work constitutes direct
++      or contributory patent infringement, then any patent licenses
++      granted to You under this License for that Work shall terminate
++      as of the date such litigation is filed.
++
++   4. Redistribution. You may reproduce and distribute copies of the
++      Work or Derivative Works thereof in any medium, with or without
++      modifications, and in Source or Object form, provided that You
++      meet the following conditions:
++
++      (a) You must give any other recipients of the Work or
++          Derivative Works a copy of this License; and
++
++      (b) You must cause any modified files to carry prominent notices
++          stating that You changed the files; and
++
++      (c) You must retain, in the Source form of any Derivative Works
++          that You distribute, all copyright, patent, trademark, and
++          attribution notices from the Source form of the Work,
++          excluding those notices that do not pertain to any part of
++          the Derivative Works; and
++
++      (d) If the Work includes a "NOTICE" text file as part of its
++          distribution, then any Derivative Works that You distribute must
++          include a readable copy of the attribution notices contained
++          within such NOTICE file, excluding those notices that do not
++          pertain to any part of the Derivative Works, in at least one
++          of the following places: within a NOTICE text file distributed
++          as part of the Derivative Works; within the Source form or
++          documentation, if provided along with the Derivative Works; or,
++          within a display generated by the Derivative Works, if and
++          wherever such third-party notices normally appear. The contents
++          of the NOTICE file are for informational purposes only and
++          do not modify the License. You may add Your own attribution
++          notices within Derivative Works that You distribute, alongside
++          or as an addendum to the NOTICE text from the Work, provided
++          that such additional attribution notices cannot be construed
++          as modifying the License.
++
++      You may add Your own copyright statement to Your modifications and
++      may provide additional or different license terms and conditions
++      for use, reproduction, or distribution of Your modifications, or
++      for any such Derivative Works as a whole, provided Your use,
++      reproduction, and distribution of the Work otherwise complies with
++      the conditions stated in this License.
++
++   5. Submission of Contributions. Unless You explicitly state otherwise,
++      any Contribution intentionally submitted for inclusion in the Work
++      by You to the Licensor shall be under the terms and conditions of
++      this License, without any additional terms or conditions.
++      Notwithstanding the above, nothing herein shall supersede or modify
++      the terms of any separate license agreement you may have executed
++      with Licensor regarding such Contributions.
++
++   6. Trademarks. This License does not grant permission to use the trade
++      names, trademarks, service marks, or product names of the Licensor,
++      except as required for reasonable and customary use in describing the
++      origin of the Work and reproducing the content of the NOTICE file.
++
++   7. Disclaimer of Warranty. Unless required by applicable law or
++      agreed to in writing, Licensor provides the Work (and each
++      Contributor provides its Contributions) on an "AS IS" BASIS,
++      WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or
++      implied, including, without limitation, any warranties or conditions
++      of TITLE, NON-INFRINGEMENT, MERCHANTABILITY, or FITNESS FOR A
++      PARTICULAR PURPOSE. You are solely responsible for determining the
++      appropriateness of using or redistributing the Work and assume any
++      risks associated with Your exercise of permissions under this License.
++
++   8. Limitation of Liability. In no event and under no legal theory,
++      whether in tort (including negligence), contract, or otherwise,
++      unless required by applicable law (such as deliberate and grossly
++      negligent acts) or agreed to in writing, shall any Contributor be
++      liable to You for damages, including any direct, indirect, special,
++      incidental, or consequential damages of any character arising as a
++      result of this License or out of the use or inability to use the
++      Work (including but not limited to damages for loss of goodwill,
++      work stoppage, computer failure or malfunction, or any and all
++      other commercial damages or losses), even if such Contributor
++      has been advised of the possibility of such damages.
++
++   9. Accepting Warranty or Additional Liability. While redistributing
++      the Work or Derivative Works thereof, You may choose to offer,
++      and charge a fee for, acceptance of support, warranty, indemnity,
++      or other liability obligations and/or rights consistent with this
++      License. However, in accepting such obligations, You may act only
++      on Your own behalf and on Your sole responsibility, not on behalf
++      of any other Contributor, and only if You agree to indemnify,
++      defend, and hold each Contributor harmless for any liability
++      incurred by, or claims asserted against, such Contributor by reason
++      of your accepting any such warranty or additional liability.
++
++   END OF TERMS AND CONDITIONS
++
++   APPENDIX: How to apply the Apache License to your work.
++
++      To apply the Apache License to your work, attach the following
++      boilerplate notice, with the fields enclosed by brackets "[]"
++      replaced with your own identifying information. (Don't include
++      the brackets!)  The text should be enclosed in the appropriate
++      comment syntax for the file format. We also recommend that a
++      file or class name and description of purpose be included on the
++      same "printed page" as the copyright notice for easier
++      identification within third-party archives.
++
++   Copyright (c) 2021 RapidAI. All rights reserved.
++
++   Licensed under the Apache License, Version 2.0 (the "License");
++   you may not use this file except in compliance with the License.
++   You may obtain a copy of the License at
++
++       http://www.apache.org/licenses/LICENSE-2.0
++
++   Unless required by applicable law or agreed to in writing, software
++   distributed under the License is distributed on an "AS IS" BASIS,
++   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++   See the License for the specific language governing permissions and
++   limitations under the License.
+diff --git a/src/Ocr/THIRD_PARTY_NOTICES b/src/Ocr/THIRD_PARTY_NOTICES
+new file mode 100644
+index 00000000..41729077
+--- /dev/null
++++ b/src/Ocr/THIRD_PARTY_NOTICES
+@@ -0,0 +1,20 @@
++The multilingual OCR worker uses the following separately licensed components:
++
++RapidOCR 3.9.2
++  https://github.com/RapidAI/RapidOCR/tree/v3.9.2
++  Copyright (c) 2021 RapidOCR Authors. Apache-2.0.
++  The full license is included in LICENSE.RapidOCR.
++
++PP-OCRv5 detection, multilingual and English recognition, and text-line orientation models
++  https://github.com/PaddlePaddle/PaddleOCR
++  https://modelscope.cn/models/RapidAI/RapidOCR
++  PaddlePaddle and RapidOCR contributors. Apache-2.0.
++  The original models and their ONNX conversions remain subject to Apache-2.0.
++
++opencv-python-headless 4.12.0.88
++  https://github.com/opencv/opencv-python
++  Apache-2.0 and third-party notices supplied in vendor/cv2/LICENSE.txt
++  and vendor/cv2/LICENSE-3RD-PARTY.txt.
++
++PKGBUILD pins the wheel and model URLs and verifies their SHA-256 checksums.
++Recognition runs locally using installed assets; the worker does not download models.
+diff --git a/src/Ocr/recognize.py b/src/Ocr/recognize.py
+new file mode 100644
+index 00000000..c112db3e
+--- /dev/null
++++ b/src/Ocr/recognize.py
+@@ -0,0 +1,313 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: LGPL-2.0-or-later
++"""Local PP-OCRv5 worker. Models are installed with the package, never fetched here."""
++
++import argparse
++import copy
++import json
++import statistics
++import sys
++import unicodedata
++from pathlib import Path
++
++
++def group_text_boxes(boxes, texts):
++    """Group detector fragments by their visual baseline, not by OCR token order."""
++    entries = []
++    for index, (box, text) in enumerate(zip(boxes, texts)):
++        if not text.strip():
++            continue
++        xs, ys = zip(*box)
++        left, right, top, bottom = min(xs), max(xs), min(ys), max(ys)
++        entries.append(dict(index=index, text=text.strip(), left=float(left), right=float(right),
++                            top=float(top), bottom=float(bottom), center=float(top + bottom) / 2,
++                            height=max(1.0, float(bottom - top))))
++    groups = []
++    for entry in sorted(entries, key=lambda item: (item["center"], item["left"])):
++        candidates = []
++        for group in groups:
++            height = statistics.median(item["height"] for item in group)
++            center = statistics.median(item["center"] for item in group)
++            overlap = min(entry["bottom"], center + height / 2) - max(entry["top"], center - height / 2)
++            if (overlap >= 0.55 * min(height, entry["height"])
++                    and abs(entry["center"] - center) <= 0.4 * max(height, entry["height"])):
++                candidates.append((abs(entry["center"] - center), group))
++        if candidates:
++            min(candidates, key=lambda item: item[0])[1].append(entry)
++        else:
++            groups.append([entry])
++
++    # Split columns only after baseline grouping. A detector may report words
++    # with slightly different heights in an order that temporarily leaves gaps.
++    split_groups = []
++    for group in groups:
++        group.sort(key=lambda item: item["left"])
++        current = []
++        for item in group:
++            if current and item["left"] - current[-1]["right"] > 4 * max(item["height"], current[-1]["height"]):
++                split_groups.append(current)
++                current = []
++            current.append(item)
++        split_groups.append(current)
++
++    lines = []
++    for group in split_groups:
++        text = group[0]["text"]
++        widths = []
++        for index, item in enumerate(group):
++            units = sum(2 if unicodedata.east_asian_width(char) in "WF" else 1 for char in item["text"])
++            if units >= 4:
++                widths.append((item["right"] - item["left"]) / units)
++            if index:
++                previous = group[index - 1]
++                gap = item["left"] - previous["right"]
++                cjk_boundary = all(unicodedata.east_asian_width(char) in "WF" for char in (text[-1], item["text"][0]))
++                separator = "" if cjk_boundary and gap < item["height"] * 0.6 else " "
++                text += separator + item["text"]
++        lines.append(dict(text=text, indices=[item["index"] for item in group],
++                          left=min(item["left"] for item in group), right=max(item["right"] for item in group),
++                          top=min(item["top"] for item in group), bottom=max(item["bottom"] for item in group),
++                          char_width=statistics.median(widths) if widths else None))
++    return sorted(lines, key=lambda line: ((line["top"] + line["bottom"]) / 2, line["left"]))
++
++
++def format_lines(lines):
++    """Preserve visible line breaks, relative indentation and paragraph gaps."""
++    if not lines:
++        return ""
++    origin = min(line["left"] for line in lines)
++    widths = [line["char_width"] for line in lines if line["char_width"]]
++    char_width = max(1.0, statistics.median(widths)) if widths else 1.0
++    centers = [(line["top"] + line["bottom"]) / 2 for line in lines]
++    height = statistics.median(line["bottom"] - line["top"] for line in lines)
++    gaps = sorted(b - a for a, b in zip(centers, centers[1:]) if b - a >= height * 1.1)
++    pitch = statistics.median(gaps[:max(1, len(gaps) // 2)]) if gaps else None
++    output = []
++    for index, line in enumerate(lines):
++        if index and pitch:
++            blank_lines = min(3, max(0, round((centers[index] - centers[index - 1]) / pitch) - 1))
++            output.extend([""] * blank_lines)
++        indent = min(80, max(0, round((line["left"] - origin) / char_width)))
++        output.append(" " * indent + line["text"])
++    return "\n".join(output)
++
++
++def content_regions_from_boxes(boxes, width, height):
++    """Build text lines, paragraphs and sections without recognizing their text."""
++    rects = []
++    for box in boxes:
++        xs, ys = zip(*box)
++        rect = (float(min(xs)), float(min(ys)), float(max(xs)), float(max(ys)))
++        if rect[2] - rect[0] >= 8 and rect[3] - rect[1] >= 4:
++            rects.append(rect)
++    if not rects:
++        return []
++    line_height = statistics.median(rect[3] - rect[1] for rect in rects)
++
++    def components(items, adjacent):
++        parent = list(range(len(items)))
++
++        def find(index):
++            while parent[index] != index:
++                parent[index] = parent[parent[index]]
++                index = parent[index]
++            return index
++
++        for i, first in enumerate(items):
++            for j in range(i + 1, len(items)):
++                if adjacent(first, items[j]):
++                    parent[find(j)] = find(i)
++        groups = {}
++        for index, item in enumerate(items):
++            groups.setdefault(find(index), []).append(item)
++        return [(min(r[0] for r in group), min(r[1] for r in group),
++                 max(r[2] for r in group), max(r[3] for r in group)) for group in groups.values()]
++
++    def same_line(a, b):
++        ah, bh = a[3] - a[1], b[3] - b[1]
++        overlap = min(a[3], b[3]) - max(a[1], b[1])
++        gap = max(a[0] - b[2], b[0] - a[2], 0)
++        return overlap >= 0.6 * min(ah, bh) and gap <= 2 * max(ah, bh)
++
++    def same_block(a, b, gap_limit, same_font):
++        if a[1] > b[1]:
++            a, b = b, a
++        ah, bh = a[3] - a[1], b[3] - b[1]
++        aw, bw = a[2] - a[0], b[2] - b[0]
++        gap = b[1] - a[3]
++        if gap < -0.2 * min(ah, bh) or gap > gap_limit:
++            return False
++        if same_font and max(ah, bh) > 1.8 * min(ah, bh):
++            return False
++        overlap = max(0, min(a[2], b[2]) - max(a[0], b[0]))
++        left_aligned = abs(a[0] - b[0]) <= 2 * line_height
++        similar_width = min(aw, bw) >= 0.6 * max(aw, bw)
++        return left_aligned or (similar_width and overlap >= 0.7 * min(aw, bw))
++
++    lines = components(rects, same_line)
++    paragraphs = components(lines, lambda a, b: same_block(a, b, 1.5 * line_height, True))
++    sections = components(paragraphs, lambda a, b: same_block(a, b, 3.5 * line_height, False))
++    result = []
++    seen = set()
++    for level, items in enumerate((lines, paragraphs, sections)):
++        padding = max(3, line_height * (0.2 + level * 0.15))
++        for left, top, right, bottom in items:
++            if level and (left, top, right, bottom) in (lines if level == 1 else paragraphs):
++                continue
++            left, top = max(0, left - padding), max(0, top - padding)
++            right, bottom = min(width, right + padding), min(height, bottom + padding)
++            key = tuple(round(value, 2) for value in (left, top, right - left, bottom - top))
++            if key not in seen:
++                seen.add(key)
++                result.append(list(key))
++    return result
++
++
++def detect_content_regions(image_path, assets, viewports):
++    model = assets / "models/ch_PP-OCRv5_det_mobile.onnx"
++    if not model.is_file():
++        raise FileNotFoundError("Missing text detection model")
++    sys.path.insert(0, str(assets / "vendor"))
++    from PIL import Image
++    import numpy as np
++    from rapidocr import ModelType, OCRVersion
++    from rapidocr.ch_ppocr_det import TextDetector
++    from rapidocr.utils.parse_parameters import ParseParams
++    from rapidocr.utils.log import logger
++
++    logger.setLevel("ERROR")
++
++    config = ParseParams.load(assets / "vendor/rapidocr/config.yaml")
++    config = ParseParams.update_batch(config, {
++        "Global.log_level": "error",
++        "Det.ocr_version": OCRVersion.PPOCRV5,
++        "Det.model_type": ModelType.MOBILE,
++        "Det.model_path": str(model),
++        "Det.limit_type": "max",
++        "Det.limit_side_len": 2048,
++        "EngineConfig.onnxruntime.intra_op_num_threads": 2,
++        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
++    })
++    config.Det.engine_cfg = config.EngineConfig[config.Det.engine_type.value]
++    config.Det.model_root_dir = assets / "models"
++    detector = TextDetector(config.Det)
++    with Image.open(image_path) as source:
++        rgba = source.convert("RGBA")
++        image = Image.new("RGB", rgba.size, "white")
++        image.paste(rgba, mask=rgba.getchannel("A"))
++    result = []
++    for x, y, w, h in viewports or [[0, 0, image.width, image.height]]:
++        left, top = max(0, int(x)), max(0, int(y))
++        right, bottom = min(image.width, int(x + w)), min(image.height, int(y + h))
++        if right <= left or bottom <= top:
++            continue
++        crop = np.asarray(image.crop((left, top, right, bottom)))[:, :, ::-1].copy()
++        detected = detector(crop)
++        if detected.boxes is not None:
++            for rx, ry, rw, rh in content_regions_from_boxes(detected.boxes, right - left, bottom - top):
++                result.append([left + rx, top + ry, rw, rh])
++    return result
++
++
++def recognize(image_path, assets):
++    models = assets / "models"
++    names = {
++        "Det": "ch_PP-OCRv5_det_mobile.onnx",
++        "Rec": "ch_PP-OCRv5_rec_server.onnx",
++        "Cls": "ch_PP-LCNet_x0_25_textline_ori_cls_mobile.onnx",
++    }
++    english_model = "en_PP-OCRv5_rec_mobile.onnx"
++    for name in (*names.values(), english_model):
++        if not (models / name).is_file():
++            raise FileNotFoundError(f"Missing OCR model: {name}")
++
++    # The pinned private wheels avoid changing the host's Python/OpenCV setup.
++    # All other Python libraries and ONNX Runtime are package dependencies.
++    sys.path.insert(0, str(assets / "vendor"))
++    from rapidocr import LangRec, ModelType, OCRVersion, RapidOCR
++    from rapidocr.ch_ppocr_rec import TextRecInput, TextRecognizer
++    from rapidocr.utils.process_img import get_rotate_crop_image
++    from PIL import Image
++
++    params = {
++        "Global.log_level": "error",
++        "Global.text_score": 0.6,
++        "Global.max_side_len": 4000,
++        "EngineConfig.onnxruntime.intra_op_num_threads": 4,
++        "EngineConfig.onnxruntime.inter_op_num_threads": 1,
++        "Det.model_type": ModelType.MOBILE,
++        "Det.limit_side_len": 1600,
++        "Det.limit_type": "max",
++        "Rec.model_type": ModelType.SERVER,
++    }
++    for stage, name in names.items():
++        params[f"{stage}.ocr_version"] = OCRVersion.PPOCRV5
++        params[f"{stage}.model_path"] = str(models / name)
++    # Screenshot text is often 12–20 physical pixels high. Upscaling before
++    # detection avoids losing small kana and thin strokes at crop boundaries.
++    with Image.open(image_path) as source:
++        rgba = source.convert("RGBA")
++        image = Image.new("RGB", rgba.size, "white")
++        image.paste(rgba, mask=rgba.getchannel("A"))
++    if max(image.size) <= 2000:
++        image = image.resize((image.width * 2, image.height * 2), Image.Resampling.LANCZOS)
++    import numpy as np
++
++    # RapidOCR's ndarray input uses OpenCV's BGR order.
++    bgr = np.asarray(image)[:, :, ::-1].copy()
++    engine = RapidOCR(params=params)
++    result = engine(bgr)
++    texts = list(result.txts or ())
++    lines = group_text_boxes(result.boxes, texts) if texts else []
++    # The multilingual recognizer has a much larger alphabet and can collapse
++    # English spaces or words. Refine Latin-only lines with the English model;
++    # never run an English decoder over a Chinese/Japanese/mixed-script line.
++    english_indices = [i for i, line in enumerate(lines)
++                       if line["text"].isascii() and sum(character.isalpha() for character in line["text"]) >= 3]
++    if english_indices:
++        config = copy.deepcopy(engine.cfg.Rec)
++        config.lang_type = LangRec.EN
++        config.model_type = ModelType.MOBILE
++        config.model_path = str(models / english_model)
++        crops = []
++        for i in english_indices:
++            line = lines[i]
++            # Recognize the complete visual line so commands split into several
++            # detector boxes retain their word spacing and parameter order.
++            box = (result.boxes[line["indices"][0]] if len(line["indices"]) == 1 else
++                   [[line["left"], line["top"]], [line["right"], line["top"]],
++                    [line["right"], line["bottom"]], [line["left"], line["bottom"]]])
++            crops.append(get_rotate_crop_image(bgr, np.array(box, dtype=np.float32)))
++        crops = engine.text_cls(crops).img_list
++        english = TextRecognizer(config)(TextRecInput(img=crops))
++        for index, text, score in zip(english_indices, english.txts, english.scores):
++            original_score = statistics.mean(result.scores[i] for i in lines[index]["indices"])
++            if score >= 0.85 and score >= original_score - 0.02:
++                lines[index]["text"] = text
++    # Keep detected reading order and Unicode scripts; do not convert Han
++    # characters to a preferred language or concatenate language-specific passes.
++    return format_lines(lines)
++
++
++def main():
++    parser = argparse.ArgumentParser()
++    parser.add_argument("--assets", type=Path, default=Path(__file__).resolve().parent)
++    parser.add_argument("--regions", action="store_true")
++    parser.add_argument("--viewports", type=json.loads)
++    parser.add_argument("image", type=Path)
++    args = parser.parse_args()
++    try:
++        if args.regions:
++            regions = detect_content_regions(args.image, args.assets, args.viewports)
++            print(json.dumps({"version": 1, "success": True, "regions": regions}))
++            return 0
++        text = recognize(args.image, args.assets)
++        print(json.dumps({"version": 1, "success": True, "text": text}, ensure_ascii=False))
++        return 0
++    except Exception as error:
++        print(json.dumps({"version": 1, "success": False, "error": str(error)}, ensure_ascii=False))
++        return 1
++
++
++if __name__ == "__main__":
++    raise SystemExit(main())
+diff --git a/src/OcrManager.cpp b/src/OcrManager.cpp
+index 84eb7899..b07924bd 100644
+--- a/src/OcrManager.cpp
++++ b/src/OcrManager.cpp
+@@ -5,6 +5,8 @@
+  */
+ 
+ #include "OcrManager.h"
++#include "MultilingualOcr.h"
++#include "OcrUtils.h"
+ #include "settings.h"
+ #include "spectacle_debug.h"
+ 
+@@ -23,6 +25,7 @@
+ 
+ #include <algorithm>
+ #include <memory>
++#include <utility>
+ 
+ using namespace Qt::StringLiterals;
+ 
+@@ -31,27 +34,20 @@ OcrManager *OcrManager::s_instance = nullptr;
+ OcrManager::OcrManager(QObject *parent)
+     : QObject(parent)
+     , m_tesseract(nullptr)
++    , m_runtimeApi(nullptr)
+     , m_worker(nullptr)
+     , m_workerThread(std::make_unique<QThread>())
+-    , m_timeoutTimer(new QTimer(this))
+-    , m_status(OcrStatus::Ready)
++    , m_status(OcrStatus::Initializing)
+     , m_currentLanguageCode() // Current language code ("eng+spa")
+     , m_configuredLanguages() // Languages from Settings (persistent)
+     , m_activeLanguages()
+     , m_shouldRestoreToConfigured(false) // Flag to restore after temp language use
+     , m_initialized(false)
+ {
+-    m_timeoutTimer->setSingleShot(true);
+-    m_timeoutTimer->setInterval(30000);
+-
+-    connect(m_timeoutTimer, &QTimer::timeout, this, [this]() {
+-        qCWarning(SPECTACLE_LOG) << "OCR recognition timed out";
+-        setStatus(OcrStatus::Error);
+-    });
+-
+     m_worker = new OcrWorker();
+     m_worker->moveToThread(m_workerThread.get());
+     connect(m_worker, &OcrWorker::imageProcessed, this, &OcrManager::handleRecognitionComplete);
++    connect(m_workerThread.get(), &QThread::finished, m_worker, &QObject::deleteLater);
+     m_workerThread->start();
+ 
+     connect(Settings::self(), &Settings::ocrLanguagesChanged, this, [this]() {
+@@ -72,19 +68,13 @@ OcrManager::~OcrManager()
+ {
+     if (m_workerThread && m_workerThread->isRunning()) {
+         m_workerThread->quit();
+-        if (!m_workerThread->wait(3000)) {
+-            qCWarning(SPECTACLE_LOG) << "Worker thread did not stop in time, terminating";
+-            m_workerThread->terminate();
+-            m_workerThread->wait();
+-        }
+-    }
+-    if (m_worker) {
+-        delete m_worker;
+-        m_worker = nullptr;
++        // Recognition has a cooperative deadline. Never terminate Tesseract while
++        // it owns allocations or locks, or destroy its API under the worker.
++        m_workerThread->wait();
+     }
+-    if (m_tesseract) {
+-        m_tesseract->End();
+-        delete m_tesseract;
++    if (m_runtimeApi && m_tesseract) {
++        m_runtimeApi->end(m_tesseract);
++        m_runtimeApi->dispose(m_tesseract);
+         m_tesseract = nullptr;
+     }
+ }
+@@ -99,7 +89,7 @@ OcrManager *OcrManager::instance()
+ 
+ bool OcrManager::isAvailable() const
+ {
+-    return m_initialized && m_tesseract != nullptr;
++    return m_status != OcrStatus::Initializing && ((m_initialized && m_tesseract != nullptr && m_runtimeApi != nullptr) || MultilingualOcr::isAvailable());
+ }
+ 
+ OcrManager::OcrStatus OcrManager::status() const
+@@ -118,6 +108,12 @@ QMap<QString, QString> OcrManager::availableLanguagesWithNames() const
+ 
+ void OcrManager::setLanguagesByCode(const QStringList &languageCodes)
+ {
++    if (m_status == OcrStatus::Processing) {
++        mPendingLanguages = languageCodes;
++        // Settings are already persisted by the settings dialog; apply them when
++        // the current request releases the engine.
++        return;
++    }
+     if (languageCodes.isEmpty()) {
+         qCWarning(SPECTACLE_LOG) << "No OCR languages specified";
+         return;
+@@ -170,7 +166,6 @@ void OcrManager::recognizeText(const QImage &image)
+ 
+     if (m_status == OcrStatus::Processing) {
+         qCWarning(SPECTACLE_LOG) << "Cannot start OCR: text extraction already running";
+-        Q_EMIT textRecognized(QString(), QStringList(), false);
+         return;
+     }
+ 
+@@ -180,6 +175,11 @@ void OcrManager::recognizeText(const QImage &image)
+         return;
+     }
+ 
++    if (MultilingualOcr::isAvailable()) {
++        beginRecognition(image, true);
++        return;
++    }
++
+     // Ensure configured languages are active
+     if (m_configuredLanguages.isEmpty() || m_activeLanguages != m_configuredLanguages) {
+         if (!validateAndApplyLanguages(m_configuredLanguages)) {
+@@ -207,7 +207,6 @@ void OcrManager::recognizeTextWithLanguage(const QImage &image, const QString &l
+ 
+     if (m_status == OcrStatus::Processing) {
+         qCWarning(SPECTACLE_LOG) << "Cannot start OCR with language" << languageCode << ": text extraction already running";
+-        Q_EMIT textRecognized(QString(), QStringList(), false);
+         return;
+     }
+ 
+@@ -217,8 +216,17 @@ void OcrManager::recognizeTextWithLanguage(const QImage &image, const QString &l
+         return;
+     }
+ 
+-    const QStringList tempLanguages{languageCode};
++    const QStringList tempLanguages = languageCode.split(u'+', Qt::SkipEmptyParts);
++    for (const auto &code : tempLanguages) {
++        if (!isLanguageAvailable(code)) {
++            mErrorMessage = i18n("OCR language data is not installed: %1", code);
++            setStatus(OcrStatus::Error);
++            Q_EMIT textRecognized({}, {}, false);
++            return;
++        }
++    }
+     if (!validateAndApplyLanguages(tempLanguages)) {
++        mErrorMessage = i18n("Could not load OCR language data: %1", languageCode);
+         qCWarning(SPECTACLE_LOG) << "Cannot start OCR with language" << languageCode << ": failed to activate language";
+         Q_EMIT textRecognized(QString(), QStringList(), false);
+         return;
+@@ -230,30 +238,38 @@ void OcrManager::recognizeTextWithLanguage(const QImage &image, const QString &l
+     beginRecognition(image);
+ }
+ 
+-void OcrManager::handleRecognitionComplete(const QString &text, bool success)
++void OcrManager::handleRecognitionComplete(const QString &text, bool success, const QString &error)
+ {
+-    m_timeoutTimer->stop();
+-
+-    if (success) {
+-        setStatus(OcrStatus::Ready);
+-
+-        if (!text.isEmpty()) {
+-            QApplication::clipboard()->setText(text);
+-        }
+-
+-        Q_EMIT textRecognized(text, m_activeLanguages, true);
+-        qCDebug(SPECTACLE_LOG) << "OCR recognition completed successfully";
+-    } else {
+-        setStatus(OcrStatus::Error);
+-        Q_EMIT textRecognized(QString(), QStringList(), false);
+-        qCWarning(SPECTACLE_LOG) << "OCR recognition failed";
+-    }
+-
+-    // Restore configured languages if we used temporary ones
+-    if (m_shouldRestoreToConfigured && !m_configuredLanguages.isEmpty()) {
++    const auto recognizedLanguages = mUsingMultilingual ? QStringList{u"chi_sim"_s, u"chi_tra"_s, u"eng"_s, u"jpn"_s} : m_activeLanguages;
++    // Restore before emitting signals: a connected slot may start another request.
++    if (m_shouldRestoreToConfigured) {
+         validateAndApplyLanguages(m_configuredLanguages);
+         m_shouldRestoreToConfigured = false;
+     }
++    mErrorMessage = success ? QString() : !error.isEmpty() ? error : i18n("Text extraction failed or timed out. Try a smaller region.");
++    if (!m_configSyncSuspended && !mPendingLanguages.isEmpty()) {
++        const auto pending = std::exchange(mPendingLanguages, {});
++        if (validateAndApplyLanguages(pending)) {
++            m_configuredLanguages = m_activeLanguages;
++            Settings::setOcrLanguages(m_activeLanguages);
++            Settings::self()->save();
++        }
++    }
++    setStatus(success ? OcrStatus::Ready : OcrStatus::Error);
++    if (success && !text.isEmpty()) {
++        QApplication::clipboard()->setText(text);
++    }
++    Q_EMIT textRecognized(text, recognizedLanguages, success);
++}
++
++QString OcrManager::errorMessage() const
++{
++    return mErrorMessage;
++}
++
++QStringList OcrManager::defaultLanguages() const
++{
++    return OcrUtils::preferredLanguages(m_availableLanguages);
+ }
+ 
+ bool OcrManager::validateAndApplyLanguages(const QStringList &languageCodes)
+@@ -309,155 +325,65 @@ bool OcrManager::validateAndApplyLanguages(const QStringList &languageCodes)
+     return true;
+ }
+ 
+-void OcrManager::beginRecognition(const QImage &image)
++QString OcrManager::engineName() const
+ {
++    return mUsingMultilingual ? u"PP-OCRv5"_s : u"Tesseract"_s;
++}
++
++void OcrManager::beginRecognition(const QImage &image, bool multilingual)
++{
++    mUsingMultilingual = multilingual;
+     setStatus(OcrStatus::Processing);
+-    m_timeoutTimer->start();
++    mErrorMessage.clear();
+ 
+     QMetaObject::invokeMethod(
+         m_worker,
+-        [worker = m_worker, image, tesseract = m_tesseract]() {
+-            worker->processImage(image, tesseract);
++        [worker = m_worker, image, tesseract = m_tesseract, runtimeApi = m_runtimeApi, multilingual]() {
++            if (multilingual) {
++                worker->processMultilingualImage(image);
++            } else {
++                worker->processImage(image, tesseract, runtimeApi);
++            }
+         },
+         Qt::QueuedConnection);
+ }
+ 
+ void OcrManager::initializeTesseract()
+ {
+-    auto cleanupTesseract = [this]() {
+-        if (m_tesseract) {
+-            m_tesseract->End();
+-            delete m_tesseract;
+-            m_tesseract = nullptr;
+-        }
++    auto fail = [this](const QString &message) {
++        mErrorMessage = MultilingualOcr::isAvailable() ? QString() : message;
++        m_initialized = false;
++        setStatus(MultilingualOcr::isAvailable() ? OcrStatus::Ready : OcrStatus::Error);
+     };
+-
+-    try {
+-        m_tesseract = new TessBaseAPI;
+-
+-        if (m_tesseract->Init(nullptr, nullptr) != 0) {
+-            qCWarning(SPECTACLE_LOG) << "Failed to initialize Tesseract OCR engine";
+-            setStatus(OcrStatus::Error);
+-            cleanupTesseract();
+-            return;
+-        }
+-
+-        const char *datapath = m_tesseract->GetDatapath();
+-        QString tessdataPath = datapath ? QString::fromUtf8(datapath) : QString();
+-        if (tessdataPath.isEmpty()) {
+-            qCWarning(SPECTACLE_LOG) << "Tesseract datapath is empty";
+-            setStatus(OcrStatus::Error);
+-            cleanupTesseract();
+-            return;
+-        }
+-        qCDebug(SPECTACLE_LOG) << "Using tessdata path:" << tessdataPath;
+-
+-        setupAvailableLanguages(tessdataPath);
+-
+-        if (m_availableLanguages.isEmpty()) {
+-            qCWarning(SPECTACLE_LOG) << "No language data files found in tessdata directory";
+-            setStatus(OcrStatus::Error);
+-            cleanupTesseract();
+-            return;
+-        }
+-
+-        m_tesseract->End();
+-
+-        QStringList configLanguages = Settings::ocrLanguages();
+-        QStringList initLanguages;
+-
+-        // Use configured languages if valid, otherwise fallback to first available
+-        for (const QString &lang : configLanguages) {
+-            if (!lang.isEmpty() && m_availableLanguages.contains(lang) && lang != u"osd"_s) {
+-                initLanguages.append(lang);
+-            }
+-        }
+-
+-        if (initLanguages.isEmpty()) {
+-            auto it = std::find_if(m_availableLanguages.begin(), m_availableLanguages.end(), [](const QString &lang) {
+-                return lang != u"osd"_s;
+-            });
+-
+-            if (it != m_availableLanguages.end()) {
+-                initLanguages.append(*it);
+-            } else {
+-                qCCritical(SPECTACLE_LOG) << "No fallback language available (only osd present)";
+-                setStatus(OcrStatus::Error);
+-                cleanupTesseract();
+-                return;
+-            }
+-        }
+-
+-        const QString combinedInitLanguages = initLanguages.join(u"+"_s);
+-        qCDebug(SPECTACLE_LOG) << "Initializing Tesseract with languages:" << combinedInitLanguages;
+-
+-        if (m_tesseract->Init(nullptr, combinedInitLanguages.toUtf8().constData()) != 0) {
+-            qCWarning(SPECTACLE_LOG) << "Failed to initialize Tesseract with languages:" << combinedInitLanguages;
+-            setStatus(OcrStatus::Error);
+-            cleanupTesseract();
+-            return;
+-        }
+-
+-        m_currentLanguageCode = combinedInitLanguages;
+-        m_tesseract->SetPageSegMode(tesseract::PSM_AUTO);
+-
+-        m_initialized = true;
+-        setStatus(OcrStatus::Ready);
+-        qCDebug(SPECTACLE_LOG) << "Tesseract OCR engine initialized successfully with languages:" << combinedInitLanguages;
+-
+-        loadSavedLanguageSetting();
+-    } catch (const std::exception &e) {
+-        qCWarning(SPECTACLE_LOG) << "Exception during Tesseract initialization:" << e.what();
+-        setStatus(OcrStatus::Error);
+-        cleanupTesseract();
+-    }
+-}
+-
+-void OcrManager::loadSavedLanguageSetting()
+-{
+-    if (!isAvailable()) {
+-        qCDebug(SPECTACLE_LOG) << "OCR not available, skipping language loading";
++    auto &loader = TesseractRuntimeLoader::instance();
++    if (!loader.ensureLoaded()) {
++        fail(i18n("OCR is unavailable. Install Tesseract and its language data."));
+         return;
+     }
+-
+-    QStringList savedLanguages = Settings::ocrLanguages();
+-    qCDebug(SPECTACLE_LOG) << "Loaded OCR languages setting from config:" << savedLanguages;
+-    qCDebug(SPECTACLE_LOG) << "Current OCR language code:" << m_currentLanguageCode;
+-    qCDebug(SPECTACLE_LOG) << "Available languages:" << m_availableLanguages;
+-
+-    QStringList validLanguages;
+-    for (const QString &lang : savedLanguages) {
+-        if (lang != u"osd"_s && isLanguageAvailable(lang)) {
+-            validLanguages.append(lang);
+-        }
++    m_runtimeApi = loader.api();
++    m_tesseract = m_runtimeApi->create();
++    if (!m_tesseract) {
++        fail(i18n("Could not create the OCR engine."));
++        return;
+     }
+ 
+-    if (validLanguages.isEmpty()) {
+-        // Find first valid language as fallback
+-        auto it = std::find_if(m_availableLanguages.begin(), m_availableLanguages.end(), [](const QString &lang) {
+-            return lang != u"osd"_s;
+-        });
+-        if (it != m_availableLanguages.end()) {
+-            validLanguages.append(*it);
+-        } else {
+-            qCWarning(SPECTACLE_LOG) << "No usable languages available (only osd present), cannot set default";
+-            return;
+-        }
+-        qCDebug(SPECTACLE_LOG) << "No valid saved languages, using default:" << validLanguages;
+-        Settings::setOcrLanguages(validLanguages);
+-        Settings::self()->save();
++    // Discover data before initializing: initializing with no language implicitly
++    // requires English, even if other valid language packs are installed.
++    mTessdataPath = OcrUtils::findTessdataPath();
++    if (mTessdataPath.isEmpty()) {
++        fail(i18n("No OCR language data found. Install English (eng), Chinese (chi_sim/chi_tra), and Japanese (jpn) language packs."));
++        return;
+     }
+-
+-    m_configuredLanguages = validLanguages;
+-
+-    const QString combinedLanguages = validLanguages.join(u"+"_s);
+-    if (combinedLanguages != m_currentLanguageCode) {
+-        qCDebug(SPECTACLE_LOG) << "Loading OCR languages setting:" << validLanguages;
+-        validateAndApplyLanguages(validLanguages);
+-    } else {
+-        qCDebug(SPECTACLE_LOG) << "OCR languages already set to:" << combinedLanguages;
+-        m_activeLanguages = validLanguages;
++    setupAvailableLanguages(mTessdataPath);
++    const auto languages = OcrUtils::configuredLanguages(Settings::ocrLanguages(), m_availableLanguages);
++    if (!validateAndApplyLanguages(languages)) {
++        fail(i18n("Could not load OCR language data from %1.", mTessdataPath));
++        return;
+     }
++    m_configuredLanguages = m_activeLanguages;
++    m_initialized = true;
++    // Initializing -> Ready also notifies QML and settings created before us.
++    setStatus(OcrStatus::Ready);
+ }
+ 
+ void OcrManager::setStatus(OcrStatus status)
+@@ -477,113 +403,52 @@ bool OcrManager::isLanguageAvailable(const QString &languageCode) const
+ 
+ bool OcrManager::setupTesseractLanguages(const QStringList &langCodes)
+ {
+-    if (!m_tesseract || langCodes.isEmpty()) {
++    if (!m_runtimeApi || langCodes.isEmpty()) {
+         return false;
+     }
+-
+-    const char *datapath = m_tesseract->GetDatapath();
+-    QString tessdataPath = datapath ? QString::fromUtf8(datapath) : QString();
+-
+-    if (tessdataPath.isEmpty()) {
+-        qCWarning(SPECTACLE_LOG) << "Tessdata path not found";
++    // Initialize a replacement first so a broken language pack cannot destroy a
++    // working engine or make the reported languages disagree with the engine.
++    auto replacement = m_runtimeApi->create();
++    if (!replacement) {
+         return false;
+     }
+-
+-    for (const QString &langCode : langCodes) {
+-        const QString langFile = QDir(tessdataPath).filePath(langCode + u".traineddata"_s);
+-        if (!QFile::exists(langFile)) {
+-            qCWarning(SPECTACLE_LOG) << "Language file not found:" << langFile;
+-            return false;
++    const auto languages = langCodes.join(u"+"_s).toUtf8();
++    const auto path = QFile::encodeName(mTessdataPath);
++    if (m_runtimeApi->init3(replacement, path.constData(), languages.constData()) != 0) {
++        m_runtimeApi->dispose(replacement);
++        return false;
++    }
++    // Tesseract may report successful Init even when only some of the requested
++    // models loaded. Verify the actual models before replacing the old engine.
++    QStringList loaded;
++    char **codes = m_runtimeApi->getLoadedLanguagesAsVector(replacement);
++    if (codes) {
++        for (char **code = codes; *code; ++code) {
++            loaded.append(QString::fromUtf8(*code));
+         }
++        m_runtimeApi->deleteTextArray(codes);
+     }
+-
+-    try {
+-        m_tesseract->End();
+-
+-        const QString combinedLangs = langCodes.join(u"+"_s);
+-
+-        if (m_tesseract->Init(nullptr, combinedLangs.toUtf8().constData()) != 0) {
+-            // Fallback to first available language
+-            QString fallbackLang;
+-            if (!m_availableLanguages.isEmpty()) {
+-                auto it = std::find_if(m_availableLanguages.begin(), m_availableLanguages.end(), [](const QString &lang) {
+-                    return lang != u"osd"_s;
+-                });
+-                if (it != m_availableLanguages.end()) {
+-                    fallbackLang = *it;
+-                }
+-            }
+-
+-            if (fallbackLang.isEmpty() || m_tesseract->Init(nullptr, fallbackLang.toUtf8().constData()) != 0) {
+-                qCWarning(SPECTACLE_LOG) << "Failed to initialize Tesseract with languages:" << combinedLangs << "and fallback:" << fallbackLang;
+-                return false;
+-            }
+-
+-            m_activeLanguages = QStringList{fallbackLang};
+-            m_currentLanguageCode = fallbackLang;
++    for (const auto &code : langCodes) {
++        if (!loaded.contains(code)) {
++            m_runtimeApi->dispose(replacement);
++            return false;
+         }
+-
+-        m_tesseract->SetPageSegMode(tesseract::PSM_AUTO);
+-        return true;
+-    } catch (const std::exception &e) {
+-        qCWarning(SPECTACLE_LOG) << "Exception while setting up Tesseract languages:" << e.what();
+-        return false;
+     }
++    m_runtimeApi->setPageSegMode(replacement, PSM_SPARSE_TEXT);
++    if (m_tesseract) {
++        m_runtimeApi->dispose(m_tesseract);
++    }
++    m_tesseract = replacement;
++    return true;
+ }
+ 
+ void OcrManager::setupAvailableLanguages(const QString &tessdataPath)
+ {
+-    m_availableLanguages.clear();
++    m_availableLanguages = OcrUtils::availableLanguages(tessdataPath);
+     m_languageNames.clear();
+-
+-    if (!m_tesseract) {
+-        qCWarning(SPECTACLE_LOG) << "Cannot enumerate OCR languages: Tesseract not initialized";
+-        return;
+-    }
+-
+-    QStringList detectedLanguages;
+-
+-    std::vector<std::string> languages;
+-    m_tesseract->GetAvailableLanguagesAsVector(&languages);
+-    if (languages.empty()) {
+-        qCWarning(SPECTACLE_LOG) << "Tesseract API returned no languages";
+-        return;
+-    }
+-
+-    detectedLanguages.reserve(languages.size());
+-    for (const auto &entry : languages) {
+-        const QString langCode = QString::fromUtf8(entry);
+-        if (langCode.isEmpty()) {
+-            continue;
+-        }
+-
+-        if (!tessdataPath.isEmpty()) {
+-            const QString trainedDataPath = QDir(tessdataPath).filePath(langCode + u".traineddata"_s);
+-            if (!QFile::exists(trainedDataPath)) {
+-                qCDebug(SPECTACLE_LOG) << "Skipping OCR language" << langCode << "- missing traineddata at" << trainedDataPath;
+-                continue;
+-            }
+-        }
+-
+-        if (!detectedLanguages.contains(langCode)) {
+-            detectedLanguages.append(langCode);
+-        }
+-    }
+-
+-    std::sort(detectedLanguages.begin(), detectedLanguages.end());
+-    m_availableLanguages = detectedLanguages;
+-
+-    for (const QString &langCode : std::as_const(m_availableLanguages)) {
+-        if (langCode == u"osd"_s) {
+-            m_languageNames.insert(langCode, i18nc("@item:inlistbox", "Orientation and Script Detection"));
+-            continue;
+-        }
+-
+-        const QString displayName = tesseractLangName(langCode);
+-        m_languageNames.insert(langCode, displayName);
++    for (const auto &code : std::as_const(m_availableLanguages)) {
++        m_languageNames.insert(code, tesseractLangName(code));
+     }
+-
+-    qCDebug(SPECTACLE_LOG) << "Detected OCR languages:" << m_availableLanguages;
+ }
+ 
+ QString OcrManager::tesseractLangName(const QString &tesseractCode) const
+@@ -647,40 +512,46 @@ OcrWorker::OcrWorker(QObject *parent)
+ {
+ }
+ 
+-void OcrWorker::processImage(const QImage &image, TessBaseAPI *tesseract)
++void OcrWorker::processImage(const QImage &image, TessBaseAPI *tesseract, const TesseractRuntimeApi *runtimeApi)
+ {
+     QMutexLocker locker(&m_mutex);
+ 
+-    if (!tesseract || image.isNull()) {
++    if (!tesseract || !runtimeApi || image.isNull()) {
+         Q_EMIT imageProcessed(QString(), false);
+         return;
+     }
+ 
+     try {
+-        QImage rgbImage = image.convertToFormat(QImage::Format_RGB888);
++        QImage rgbImage = OcrUtils::prepareImage(image);
+ 
+-        tesseract->SetImage(rgbImage.bits(), rgbImage.width(), rgbImage.height(), 3, rgbImage.bytesPerLine());
++        runtimeApi->setImage(tesseract, rgbImage.bits(), rgbImage.width(), rgbImage.height(), 3, rgbImage.bytesPerLine());
+ 
+-        if (tesseract->Recognize(nullptr) != 0) {
++        const auto monitor = std::unique_ptr<ETEXT_DESC, TesseractRuntimeApi::MonitorDeleteFunc>(runtimeApi->monitorCreate(), runtimeApi->monitorDelete);
++        if (!monitor) {
++            Q_EMIT imageProcessed(QString(), false);
++            return;
++        }
++        runtimeApi->monitorDeadline(monitor.get(), 30000);
++        if (runtimeApi->recognize(tesseract, monitor.get()) != 0) {
+             Q_EMIT imageProcessed(QString(), false);
+             return;
+         }
+ 
+         QStringList lines;
+-        TessResultIterator *iterator = tesseract->GetIterator();
++        TessResultIterator *iterator = runtimeApi->iterator(tesseract);
+ 
+         if (iterator) {
+             do {
+-                char *lineText = iterator->GetUTF8Text(tesseract::RIL_TEXTLINE);
++                char *lineText = runtimeApi->iteratorText(iterator, RIL_TEXTLINE);
+                 if (lineText != nullptr) {
+                     QString line = QString::fromUtf8(lineText).trimmed();
+                     if (!line.isEmpty()) {
+                         lines.append(line);
+                     }
+-                    delete lineText;
++                    runtimeApi->deleteText(lineText);
+                 }
+-            } while (iterator->Next(tesseract::RIL_TEXTLINE) != 0);
+-            delete iterator;
++            } while (runtimeApi->iteratorNext(iterator, RIL_TEXTLINE) != 0);
++            runtimeApi->iteratorDelete(iterator);
+         }
+ 
+         const QString result = lines.join(QLatin1Char('\n')).trimmed();
+@@ -691,4 +562,8 @@ void OcrWorker::processImage(const QImage &image, TessBaseAPI *tesseract)
+     }
+ }
+ 
+-#include "moc_OcrManager.cpp"
++void OcrWorker::processMultilingualImage(const QImage &image)
++{
++    const auto result = MultilingualOcr::recognize(image);
++    Q_EMIT imageProcessed(result.text, result.success, result.error);
++}
+diff --git a/src/OcrManager.h b/src/OcrManager.h
+index 19eeae3c..305ba1e7 100644
+--- a/src/OcrManager.h
++++ b/src/OcrManager.h
+@@ -8,6 +8,8 @@
+ 
+ #include "Config.h"
+ 
++#include "TesseractRuntimeLoader.h"
++
+ #include <QImage>
+ #include <QMap>
+ #include <QMutex>
+@@ -18,8 +20,6 @@
+ 
+ #include <memory>
+ 
+-#include <tesseract/capi.h>
+-
+ /**
+  * @brief Worker class for OCR processing in background thread
+  */
+@@ -31,10 +31,11 @@ public:
+     explicit OcrWorker(QObject *parent = nullptr);
+ 
+ public Q_SLOTS:
+-    void processImage(const QImage &image, TessBaseAPI *tesseract);
++    void processImage(const QImage &image, TessBaseAPI *tesseract, const TesseractRuntimeApi *runtimeApi);
++    void processMultilingualImage(const QImage &image);
+ 
+ Q_SIGNALS:
+-    void imageProcessed(const QString &text, bool success);
++    void imageProcessed(const QString &text, bool success, const QString &error = {});
+ 
+ private:
+     QMutex m_mutex;
+@@ -54,7 +55,8 @@ public:
+     enum class OcrStatus {
+         Ready = 0,
+         Processing = 1,
+-        Error = 2
++        Error = 2,
++        Initializing = 3
+     };
+     Q_ENUM(OcrStatus)
+ 
+@@ -92,6 +94,9 @@ public:
+      * @return Current language code (e.g., "eng", "spa")
+      */
+     QString currentLanguageCode() const;
++    QString errorMessage() const;
++    QString engineName() const;
++    QStringList defaultLanguages() const;
+     void setConfigSyncSuspended(bool suspended);
+     bool isConfigSyncSuspended() const;
+ 
+@@ -131,14 +136,13 @@ Q_SIGNALS:
+     void statusChanged(OcrStatus status);
+ 
+ private Q_SLOTS:
+-    void handleRecognitionComplete(const QString &text, bool success);
++    void handleRecognitionComplete(const QString &text, bool success, const QString &error);
+ 
+ private:
+     void initializeTesseract();
+     void setStatus(OcrStatus status);
+     bool setupTesseractLanguages(const QStringList &langCodes);
+     void setupAvailableLanguages(const QString &tessdataPath);
+-    void loadSavedLanguageSetting();
+     bool isLanguageAvailable(const QString &languageCode) const;
+     QString tesseractLangName(const QString &tesseractCode) const;
+ 
+@@ -148,14 +152,16 @@ private:
+      * @return true if languages were successfully applied
+      */
+     bool validateAndApplyLanguages(const QStringList &languageCodes);
+-    void beginRecognition(const QImage &image);
++    void beginRecognition(const QImage &image, bool multilingual = false);
+ 
+     static OcrManager *s_instance;
+ 
+     TessBaseAPI *m_tesseract;
++    const TesseractRuntimeApi *m_runtimeApi;
+     OcrWorker *m_worker;
+     std::unique_ptr<QThread> m_workerThread;
+-    QTimer *m_timeoutTimer;
++    QString mTessdataPath;
++    QString mErrorMessage;
+ 
+     OcrStatus m_status;
+     QString m_currentLanguageCode;
+@@ -165,7 +171,9 @@ private:
+     QStringList m_availableLanguages;
+     QMap<QString, QString> m_languageNames;
+     bool m_configSyncSuspended = false;
++    QStringList mPendingLanguages;
+     bool m_initialized;
++    bool mUsingMultilingual = false;
+ 
+ private:
+ };
+diff --git a/src/OcrUtils.cpp b/src/OcrUtils.cpp
+new file mode 100644
+index 00000000..43f5339c
+--- /dev/null
++++ b/src/OcrUtils.cpp
+@@ -0,0 +1,93 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "OcrUtils.h"
++
++#include <QDir>
++#include <QPainter>
++#include <QStandardPaths>
++
++using namespace Qt::StringLiterals;
++
++QStringList OcrUtils::availableLanguages(const QString &path)
++{
++    QStringList result;
++    const auto files = QDir(path).entryList({u"*.traineddata"_s}, QDir::Files | QDir::Readable, QDir::Name);
++    for (const auto &file : files) {
++        const auto code = file.chopped(12);
++        if (code != u"osd"_s) {
++            result.append(code);
++        }
++    }
++    return result;
++}
++
++QString OcrUtils::findTessdataPath()
++{
++    const auto override = qEnvironmentVariable("TESSDATA_PREFIX");
++    if (!override.isEmpty()) {
++        return override;
++    }
++    QStringList paths = QStandardPaths::locateAll(QStandardPaths::GenericDataLocation, u"spectacle/tessdata"_s, QStandardPaths::LocateDirectory);
++    paths << u"/usr/share/tessdata"_s << u"/usr/local/share/tessdata"_s;
++    for (const auto &version : {u"5"_s, u"4.00"_s}) {
++        paths << u"/usr/share/tesseract-ocr/%1/tessdata"_s.arg(version);
++    }
++    for (const auto &path : paths) {
++        if (!availableLanguages(path).isEmpty()) {
++            return path;
++        }
++    }
++    return {};
++}
++
++QStringList OcrUtils::preferredLanguages(const QStringList &available)
++{
++    QStringList result;
++    for (const auto &code : {u"chi_sim"_s, u"eng"_s, u"jpn"_s, u"chi_tra"_s}) {
++        if (available.contains(code)) {
++            result.append(code);
++        }
++    }
++    if (result.isEmpty()) {
++        for (const auto &code : available) {
++            if (code != u"osd"_s) {
++                result.append(code);
++                break;
++            }
++        }
++    }
++    return result;
++}
++
++QStringList OcrUtils::configuredLanguages(const QStringList &configured, const QStringList &available)
++{
++    QStringList result;
++    for (const auto &code : configured) {
++        if (code != u"osd"_s && available.contains(code) && !result.contains(code)) {
++            result.append(code);
++        }
++        if (result.size() == 4) {
++            break;
++        }
++    }
++    return result.isEmpty() ? preferredLanguages(available) : result;
++}
++
++QImage OcrUtils::prepareImage(const QImage &image)
++{
++    if (image.isNull()) {
++        return {};
++    }
++    // Composite alpha against white and enlarge small UI text. Bound the extra
++    // allocation on large desktop captures; keep the original aspect ratio.
++    QImage rgb(image.size(), QImage::Format_RGB888);
++    rgb.fill(Qt::white);
++    QPainter painter(&rgb);
++    QImage source = image;
++    source.setDevicePixelRatio(1);
++    painter.drawImage(0, 0, source);
++    painter.end();
++    if (qMax(rgb.width(), rgb.height()) <= 2000) {
++        rgb = rgb.scaled(rgb.size() * 2, Qt::KeepAspectRatio, Qt::SmoothTransformation);
++    }
++    return rgb;
++}
+diff --git a/src/OcrUtils.h b/src/OcrUtils.h
+new file mode 100644
+index 00000000..c675bf27
+--- /dev/null
++++ b/src/OcrUtils.h
+@@ -0,0 +1,14 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#pragma once
++
++#include <QImage>
++#include <QStringList>
++
++namespace OcrUtils
++{
++QString findTessdataPath();
++QStringList availableLanguages(const QString &path);
++QStringList preferredLanguages(const QStringList &available);
++QStringList configuredLanguages(const QStringList &configured, const QStringList &available);
++QImage prepareImage(const QImage &image);
++}
+diff --git a/src/SpectacleCore.cpp b/src/SpectacleCore.cpp
+index 070a5a62..1f9459da 100644
+--- a/src/SpectacleCore.cpp
++++ b/src/SpectacleCore.cpp
+@@ -12,17 +12,19 @@
+ #include "ExportManager.h"
+ #include "Geometry.h"
+ #include "Gui/CaptureWindow.h"
++#include "Gui/InlineMessageModel.h"
++#include "Gui/OcrResultDialog.h"
++#include "Gui/PinnedImageWindow.h"
+ #include "Gui/Selection.h"
+ #include "Gui/SelectionEditor.h"
+ #include "Gui/SpectacleWindow.h"
+-#include "Gui/InlineMessageModel.h"
+ #include "ImageMetaData.h"
+ #include "OcrManager.h"
++#include "PlasmaVersion.h"
+ #include "Platforms/ImagePlatformXcb.h"
+ #include "Platforms/PlatformLoader.h"
+ #include "RecordingModeModel.h"
+ #include "ShortcutActions.h"
+-#include "PlasmaVersion.h"
+ // generated
+ #include "settings.h"
+ 
+@@ -237,20 +239,26 @@ SpectacleCore::SpectacleCore(QObject *parent)
+             static const auto rectKey = u"rect"_s;
+             m_videoPlatform->startRecording(output, VideoPlatform::Region, {{rectKey, rect}}, includePointer);
+         } else {
++            // OCR and pinning consume the selected image without triggering
++            // ordinary auto-export, which can quit the application prematurely.
++            if (mPinExportInProgress || m_ocrExportInProgress) {
++                m_annotationDocument->cropCanvas(rect);
++                syncExportImage();
++                if (mPinExportInProgress) {
++                    mPinExportInProgress = false;
++                    new PinnedImageWindow(m_annotationDocument->renderToImage(), rect.topLeft().toPoint(), QGuiApplication::screenAt(rect.center().toPoint()));
++                } else {
++                    m_ocrExportInProgress = false;
++                    performOcrExtraction(mPendingOcrLanguage);
++                }
++                deleteWindows();
++                return;
++            }
+             SpectacleWindow::setVisibilityForAll(QWindow::Hidden);
+             deleteWindows();
+             m_annotationDocument->cropCanvas(rect);
+             syncExportImage();
+             auto exportActions = actions & ExportManager::AnyAction ? actions : autoExportActions();
+-            if (m_ocrExportInProgress) {
+-                if (Settings::closeAfterOcr()) {
+-                    exportActions.setFlag(ExportManager::Action::Save, false);
+-                    exportActions.setFlag(ExportManager::Action::CopyPath, false);
+-                    m_quitAfterOcr = true;
+-                }
+-                exportActions.setFlag(ExportManager::Action::CopyImage, false);
+-                m_ocrExportInProgress = false;
+-            }
+             const bool willQuit = exportActions.testAnyFlags(ExportManager::AnyAction) //
+                 && exportActions.testFlag(ExportManager::UserAction) //
+                 && Settings::quitAfterSaveCopyExport();
+@@ -280,6 +288,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
+         setVideoMode(false);
+         m_annotationDocument->clearAnnotations();
+         m_annotationDocument->setBaseImage(image);
++        SelectionEditor::instance()->detectRegions(image, m_annotationDocument->canvasRect());
+         setExportImage(image);
+         ExportManager::instance()->updateTimestamp();
+         initCaptureWindows(CaptureWindow::Image);
+@@ -638,12 +647,27 @@ SpectacleCore::SpectacleCore(QObject *parent)
+     connect(exportManager, &ExportManager::qrCodeScanned, this, onQRCodeScanned);
+ 
+     auto onOcrTextRecognized = [this](const QString &text, const QStringList &languageCodes, bool success) {
++        const auto message = !success ? OcrManager::instance()->errorMessage()
++            : text.isEmpty() ? i18n("No text found. Try a tighter region and check the selected OCR languages.")
++                             : i18n("Text copied to clipboard. %1 · Languages: %2", OcrManager::instance()->engineName(), languageCodes.join(u" + "_s));
++        if (!mOcrResultDialog && (!success || text.isEmpty() || !Settings::closeAfterOcr())) {
++            mOcrResultDialog = createOcrResultDialog();
++        }
++        if (mOcrResultDialog) {
++            mOcrResultDialog->setResult(text, message);
++            mOcrResultDialog->show();
++            mOcrResultDialog->raise();
++        }
+         if (!success) {
++            mOcrLoopLocker.reset();
++            m_quitAfterOcr = false;
+             InlineMessageModel::instance()->push(InlineMessageModel::Error, i18nc("@info", "Text extraction failed"));
+             return;
+         }
+ 
+         if (text.isEmpty()) {
++            mOcrLoopLocker.reset();
++            m_quitAfterOcr = false;
+             InlineMessageModel::instance()->push(InlineMessageModel::Copied, i18nc("@info", "No text found in the image"));
+             return;
+         }
+@@ -728,6 +752,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
+         QTimer::singleShot(180000, notification, onExpired);
+ 
+         notification->sendEvent();
++        mOcrLoopLocker.reset();
+ 
+         if (m_quitAfterOcr) {
+             m_quitAfterOcr = false;
+@@ -813,61 +838,94 @@ QVariantMap SpectacleCore::ocrAvailableLanguages() const
+     return result;
+ }
+ 
+-bool SpectacleCore::startOcrExtraction(const QString &languageCode)
++bool SpectacleCore::pinScreenshot()
+ {
+-    if (m_videoMode) {
++    if (m_videoMode || mPinExportInProgress || m_ocrExportInProgress) {
+         return false;
+     }
++    if (!CaptureWindow::instances().isEmpty()) {
++        if (SelectionEditor::instance()->selection()->isEmpty()) {
++            return false;
++        }
++        mPinExportInProgress = true;
++        if (!SelectionEditor::instance()->acceptSelection(ExportManager::UserAction)) {
++            mPinExportInProgress = false;
++            return false;
++        }
++        return true;
++    }
++    const auto image = m_annotationDocument->renderToImage();
++    if (image.isNull()) {
++        return false;
++    }
++    const auto rect = m_annotationDocument->canvasRect();
++    new PinnedImageWindow(image, rect.topLeft().toPoint(), QGuiApplication::screenAt(rect.center().toPoint()));
++    return true;
++}
+ 
+-    const bool hasCaptureWindows = !CaptureWindow::instances().isEmpty();
+-
+-    if (hasCaptureWindows) {
+-        auto selectionEditor = SelectionEditor::instance();
+-        auto inlineMessages = InlineMessageModel::instance();
+-
++bool SpectacleCore::startOcrExtraction(const QString &languageCode)
++{
++    auto manager = OcrManager::instance();
++    if (m_videoMode || m_ocrExportInProgress || mPinExportInProgress || manager->status() == OcrManager::OcrStatus::Processing) {
++        return false;
++    }
++    if (!manager->isAvailable()) {
++        if (!mOcrResultDialog) {
++            mOcrResultDialog = createOcrResultDialog();
++        }
++        mOcrResultDialog->setResult({}, manager->errorMessage().isEmpty() ? i18n("OCR engine is initializing…") : manager->errorMessage());
++        mOcrResultDialog->show();
++        return false;
++    }
++    mOcrLoopLocker = std::make_unique<QEventLoopLocker>();
++    if (!CaptureWindow::instances().isEmpty()) {
++        mPendingOcrLanguage = languageCode;
+         m_ocrExportInProgress = true;
+-        if (!selectionEditor->acceptSelection(ExportManager::UserAction)) {
++        if (!SelectionEditor::instance()->acceptSelection(ExportManager::UserAction)) {
+             m_ocrExportInProgress = false;
+-            inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "Please select a region before extracting text"));
++            mOcrLoopLocker.reset();
+             return false;
+         }
+-
+-        QMetaObject::invokeMethod(
+-            this,
+-            [this, languageCode]() {
+-                performOcrExtraction(languageCode);
+-            },
+-            Qt::QueuedConnection);
+         return true;
+     }
+-
+     return performOcrExtraction(languageCode);
+ }
+ 
+-bool SpectacleCore::performOcrExtraction(const QString &languageCode)
++OcrResultDialog *SpectacleCore::createOcrResultDialog()
+ {
+-    auto ocrManager = OcrManager::instance();
+-    auto inlineMessages = InlineMessageModel::instance();
+-
+-    if (!ocrManager->isAvailable()) {
+-        inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "OCR is not available."));
+-        return false;
+-    }
++    auto dialog = new OcrResultDialog;
++    connect(dialog, &OcrResultDialog::recognitionRequested, this, [this](const QImage &image, const QString &languages) {
++        if (OcrManager::instance()->status() != OcrManager::OcrStatus::Processing) {
++            performOcrExtraction(languages, image);
++        }
++    });
++    return dialog;
++}
+ 
+-    const QImage image = m_annotationDocument->renderToImage();
++bool SpectacleCore::performOcrExtraction(const QString &languageCode, const QImage &sourceImage)
++{
++    const QImage image = sourceImage.isNull() ? m_annotationDocument->renderToImage() : sourceImage;
+     if (image.isNull()) {
+-        inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "No screenshot available."));
++        mOcrLoopLocker.reset();
+         return false;
+     }
+-
+-    inlineMessages->push(InlineMessageModel::Copied, i18nc("@info", "Extracting text from image..."));
+-
++    mOcrLoopLocker = std::make_unique<QEventLoopLocker>();
++    if (!Settings::closeAfterOcr() || mOcrResultDialog) {
++        if (!mOcrResultDialog) {
++            mOcrResultDialog = createOcrResultDialog();
++        }
++        mOcrResultDialog->setSourceImage(image, languageCode);
++        mOcrResultDialog->setResult({}, i18n("Extracting text…"));
++        mOcrResultDialog->setBusy(true);
++        mOcrResultDialog->show();
++    }
++    auto manager = OcrManager::instance();
++    m_quitAfterOcr = Settings::closeAfterOcr();
+     if (languageCode.isEmpty()) {
+-        ocrManager->recognizeText(image);
++        manager->recognizeText(image);
+     } else {
+-        ocrManager->recognizeTextWithLanguage(image, languageCode);
++        manager->recognizeTextWithLanguage(image, languageCode);
+     }
+-
+     return true;
+ }
+ 
+diff --git a/src/SpectacleCore.h b/src/SpectacleCore.h
+index bc930640..add8b3db 100644
+--- a/src/SpectacleCore.h
++++ b/src/SpectacleCore.h
+@@ -29,6 +29,8 @@
+ 
+ class QEvent;
+ 
++class OcrResultDialog;
++
+ class SpectacleCore : public QObject
+ {
+     Q_OBJECT
+@@ -83,6 +85,7 @@ public:
+     bool ocrAvailable() const;
+     OcrManager::OcrStatus ocrStatus() const;
+     Q_INVOKABLE QVariantMap ocrAvailableLanguages() const;
++    Q_INVOKABLE bool pinScreenshot();
+     Q_INVOKABLE bool startOcrExtraction(const QString &languageCode = QString());
+ 
+     void initGuiNoScreenshot();
+@@ -160,7 +163,8 @@ private:
+     void unityLauncherUpdate(const QVariantMap &properties) const;
+     void setCurrentVideo(const QUrl &currentVideo);
+     QUrl videoOutputUrl() const;
+-    bool performOcrExtraction(const QString &languageCode);
++    bool performOcrExtraction(const QString &languageCode, const QImage &sourceImage = {});
++    OcrResultDialog *createOcrResultDialog();
+     void updateGameModeShortcuts();
+ 
+     static SpectacleCore *s_self;
+@@ -168,6 +172,10 @@ private:
+     StartMode m_startMode = StartMode::Gui;
+     bool m_returnToViewer = false;
+     bool m_ocrExportInProgress = false;
++    bool mPinExportInProgress = false;
++    QString mPendingOcrLanguage;
++    QPointer<OcrResultDialog> mOcrResultDialog;
++    std::unique_ptr<QEventLoopLocker> mOcrLoopLocker;
+     bool m_quitAfterOcr = false;
+     QUrl m_screenCaptureUrl;
+     std::unique_ptr<ImagePlatform> m_imagePlatform;
+diff --git a/src/TesseractCompatibility.h b/src/TesseractCompatibility.h
+index 4ed5c6da..6553b868 100644
+--- a/src/TesseractCompatibility.h
++++ b/src/TesseractCompatibility.h
+@@ -13,6 +13,7 @@ using TessPageSegMode = tesseract::PageSegMode;
+ using TessPageIteratorLevel = tesseract::PageIteratorLevel;
+ 
+ static constexpr auto PSM_AUTO = tesseract::PSM_AUTO;
++static constexpr auto PSM_SPARSE_TEXT = tesseract::PSM_SPARSE_TEXT;
+ static constexpr auto RIL_TEXTLINE = tesseract::RIL_TEXTLINE;
+ 
+ #else
+diff --git a/src/TesseractRuntimeLoader.cpp b/src/TesseractRuntimeLoader.cpp
+new file mode 100644
+index 00000000..16a78265
+--- /dev/null
++++ b/src/TesseractRuntimeLoader.cpp
+@@ -0,0 +1,192 @@
++/*
++ *  SPDX-FileCopyrightText: 2025 Jhair Paris <dev@jhairparis.com>
++ *
++ *  SPDX-License-Identifier: LGPL-2.0-or-later
++ */
++
++#include "TesseractRuntimeLoader.h"
++
++#include "spectacle_debug.h"
++
++#include <QMutexLocker>
++#include <type_traits>
++
++TesseractRuntimeLoader &TesseractRuntimeLoader::instance()
++{
++    static TesseractRuntimeLoader s_instance;
++    return s_instance;
++}
++
++TesseractRuntimeLoader::TesseractRuntimeLoader() = default;
++TesseractRuntimeLoader::~TesseractRuntimeLoader()
++{
++    if (m_library.isLoaded()) {
++        m_library.unload();
++    }
++}
++
++bool TesseractRuntimeLoader::ensureLoaded()
++{
++    QMutexLocker locker(&m_mutex);
++    if (m_loaded) {
++        return true;
++    }
++    return loadLocked();
++}
++
++bool TesseractRuntimeLoader::isLoaded() const
++{
++    QMutexLocker locker(&m_mutex);
++    return m_loaded;
++}
++
++const TesseractRuntimeApi *TesseractRuntimeLoader::api() const
++{
++    QMutexLocker locker(&m_mutex);
++    return m_loaded ? &m_api : nullptr;
++}
++
++bool TesseractRuntimeLoader::loadLocked()
++{
++    const auto candidates = candidateLibraryNames();
++    for (const QString &candidate : candidates) {
++        m_library.setFileName(candidate);
++        m_library.setLoadHints(QLibrary::ExportExternalSymbolsHint | QLibrary::PreventUnloadHint);
++
++        if (!m_library.load()) {
++            qCWarning(SPECTACLE_LOG) << "Unable to load Tesseract candidate" << candidate << ':' << m_library.errorString();
++            continue;
++        }
++
++        qCInfo(SPECTACLE_LOG) << "Attempting to use Tesseract library" << candidate;
++
++        if (!resolveSymbols()) {
++            m_library.unload();
++            continue;
++        }
++
++        if (!validateLoadedVersion()) {
++            m_library.unload();
++            continue;
++        }
++
++        m_loaded = true;
++        qCInfo(SPECTACLE_LOG) << "Loaded Tesseract runtime library from" << m_library.fileName();
++        return true;
++    }
++
++    qCWarning(SPECTACLE_LOG) << "Unable to locate a suitable Tesseract shared library";
++    return false;
++}
++
++bool TesseractRuntimeLoader::resolveSymbols()
++{
++    auto resolve = [this](auto &target, const char *symbol) {
++        target = reinterpret_cast<std::remove_reference_t<decltype(target)>>(m_library.resolve(symbol));
++        if (!target) {
++            qCWarning(SPECTACLE_LOG) << "Failed to resolve" << symbol << "from" << m_library.fileName();
++            return false;
++        }
++        return true;
++    };
++
++    if (!resolve(m_api.monitorCreate, "TessMonitorCreate") || !resolve(m_api.monitorDelete, "TessMonitorDelete")
++        || !resolve(m_api.monitorDeadline, "TessMonitorSetDeadlineMSecs")) {
++        return false;
++    }
++    if (!resolve(m_api.create, "TessBaseAPICreate")) {
++        return false;
++    }
++    if (!resolve(m_api.dispose, "TessBaseAPIDelete")) {
++        return false;
++    }
++    if (!resolve(m_api.init3, "TessBaseAPIInit3")) {
++        return false;
++    }
++    if (!resolve(m_api.end, "TessBaseAPIEnd")) {
++        return false;
++    }
++    if (!resolve(m_api.setPageSegMode, "TessBaseAPISetPageSegMode")) {
++        return false;
++    }
++    if (!resolve(m_api.datapath, "TessBaseAPIGetDatapath")) {
++        return false;
++    }
++    if (!resolve(m_api.setImage, "TessBaseAPISetImage")) {
++        return false;
++    }
++    if (!resolve(m_api.recognize, "TessBaseAPIRecognize")) {
++        return false;
++    }
++    if (!resolve(m_api.iterator, "TessBaseAPIGetIterator")) {
++        return false;
++    }
++    if (!resolve(m_api.iteratorText, "TessResultIteratorGetUTF8Text")) {
++        return false;
++    }
++    if (!resolve(m_api.iteratorNext, "TessResultIteratorNext")) {
++        return false;
++    }
++    if (!resolve(m_api.iteratorDelete, "TessResultIteratorDelete")) {
++        return false;
++    }
++    if (!resolve(m_api.deleteText, "TessDeleteText")) {
++        return false;
++    }
++    if (!resolve(m_api.version, "TessVersion")) {
++        return false;
++    }
++    if (!resolve(m_api.getAvailableLanguagesAsVector, "TessBaseAPIGetAvailableLanguagesAsVector")) {
++        return false;
++    }
++    if (!resolve(m_api.getLoadedLanguagesAsVector, "TessBaseAPIGetLoadedLanguagesAsVector")) {
++        return false;
++    }
++    if (!resolve(m_api.deleteTextArray, "TessDeleteTextArray")) {
++        return false;
++    }
++
++    return true;
++}
++
++bool TesseractRuntimeLoader::validateLoadedVersion()
++{
++    constexpr int kMinSupportedMajor = 4;
++    constexpr int kMaxSupportedMajor = 5;
++
++    if (!m_api.version) {
++        qCWarning(SPECTACLE_LOG) << "Tesseract runtime missing TessVersion symbol";
++        return false;
++    }
++
++    const char *versionPtr = m_api.version();
++    const QString versionString = versionPtr ? QString::fromLatin1(versionPtr) : QString();
++
++    if (versionString.isEmpty()) {
++        qCWarning(SPECTACLE_LOG) << "Unable to determine Tesseract runtime version";
++        return false;
++    }
++
++    const QString majorComponent = versionString.section(QLatin1Char('.'), 0, 0);
++    bool ok = false;
++    const int majorVersion = majorComponent.toInt(&ok);
++
++    if (!ok) {
++        qCWarning(SPECTACLE_LOG) << "Failed to parse Tesseract version" << versionString;
++        return false;
++    }
++
++    if (majorVersion < kMinSupportedMajor || majorVersion > kMaxSupportedMajor) {
++        qCWarning(SPECTACLE_LOG) << "Unsupported Tesseract version" << versionString << "(supported major versions" << kMinSupportedMajor << "-"
++                                 << kMaxSupportedMajor << ')';
++        return false;
++    }
++
++    qCInfo(SPECTACLE_LOG) << "Detected Tesseract version" << versionString;
++    return true;
++}
++
++QStringList TesseractRuntimeLoader::candidateLibraryNames() const
++{
++    return {QStringLiteral("libtesseract.so.5"), QStringLiteral("libtesseract.so.4"), QStringLiteral("libtesseract.so")};
++}
+diff --git a/src/TesseractRuntimeLoader.h b/src/TesseractRuntimeLoader.h
+new file mode 100644
+index 00000000..06f05755
+--- /dev/null
++++ b/src/TesseractRuntimeLoader.h
+@@ -0,0 +1,84 @@
++/*
++ *  SPDX-FileCopyrightText: 2025 Jhair Paris <dev@jhairparis.com>
++ *
++ *  SPDX-License-Identifier: LGPL-2.0-or-later
++ */
++
++#pragma once
++
++#include "Config.h"
++#include "TesseractCompatibility.h"
++
++#include <QLibrary>
++#include <QMutex>
++#include <QStringList>
++
++struct TesseractRuntimeApi {
++    using CreateFunc = TessBaseAPI *(*)();
++    using DeleteFunc = void (*)(TessBaseAPI *);
++    using Init3Func = int (*)(TessBaseAPI *, const char *, const char *);
++    using EndFunc = void (*)(TessBaseAPI *);
++    using SetPageSegModeFunc = void (*)(TessBaseAPI *, TessPageSegMode);
++    using GetDatapathFunc = const char *(*)(TessBaseAPI *);
++    using SetImageFunc = void (*)(TessBaseAPI *, const unsigned char *, int, int, int, int);
++    using RecognizeFunc = int (*)(TessBaseAPI *, ETEXT_DESC *);
++    using GetIteratorFunc = TessResultIterator *(*)(TessBaseAPI *);
++    using ResultGetUTF8TextFunc = char *(*)(const TessResultIterator *, TessPageIteratorLevel);
++    using ResultNextFunc = int (*)(TessResultIterator *, TessPageIteratorLevel);
++    using ResultDeleteFunc = void (*)(TessResultIterator *);
++    using DeleteTextFunc = void (*)(char *);
++    using DeleteTextArrayFunc = void (*)(char **);
++    using VersionFunc = const char *(*)();
++    using GetAvailableLanguagesAsVectorFunc = char **(*)(const TessBaseAPI *);
++
++    using MonitorCreateFunc = ETEXT_DESC *(*)();
++    using MonitorDeleteFunc = void (*)(ETEXT_DESC *);
++    using MonitorDeadlineFunc = void (*)(ETEXT_DESC *, int);
++
++    MonitorCreateFunc monitorCreate = nullptr;
++    MonitorDeleteFunc monitorDelete = nullptr;
++    MonitorDeadlineFunc monitorDeadline = nullptr;
++    CreateFunc create = nullptr;
++    DeleteFunc dispose = nullptr;
++    Init3Func init3 = nullptr;
++    EndFunc end = nullptr;
++    SetPageSegModeFunc setPageSegMode = nullptr;
++    GetDatapathFunc datapath = nullptr;
++    SetImageFunc setImage = nullptr;
++    RecognizeFunc recognize = nullptr;
++    GetIteratorFunc iterator = nullptr;
++    ResultGetUTF8TextFunc iteratorText = nullptr;
++    ResultNextFunc iteratorNext = nullptr;
++    ResultDeleteFunc iteratorDelete = nullptr;
++    DeleteTextFunc deleteText = nullptr;
++    DeleteTextArrayFunc deleteTextArray = nullptr;
++    VersionFunc version = nullptr;
++    GetAvailableLanguagesAsVectorFunc getAvailableLanguagesAsVector = nullptr;
++    GetAvailableLanguagesAsVectorFunc getLoadedLanguagesAsVector = nullptr;
++};
++
++class TesseractRuntimeLoader
++{
++public:
++    static TesseractRuntimeLoader &instance();
++
++    bool ensureLoaded();
++    bool isLoaded() const;
++    const TesseractRuntimeApi *api() const;
++
++private:
++    TesseractRuntimeLoader();
++    ~TesseractRuntimeLoader();
++
++    bool loadLocked();
++    bool resolveSymbols();
++    bool validateLoadedVersion();
++    QStringList candidateLibraryNames() const;
++
++    Q_DISABLE_COPY_MOVE(TesseractRuntimeLoader)
++
++    mutable QMutex m_mutex;
++    bool m_loaded = false;
++    QLibrary m_library;
++    TesseractRuntimeApi m_api;
++};
+diff --git a/tests/CMakeLists.txt b/tests/CMakeLists.txt
+index 7cda28ed..fce2b74d 100644
+--- a/tests/CMakeLists.txt
++++ b/tests/CMakeLists.txt
+@@ -24,3 +24,56 @@ ecm_add_test(
+     LINK_LIBRARIES  Qt::Test
+         Qt::PrintSupport Qt::Qml KF6::I18n KF6::ConfigCore KF6::GlobalAccel KF6::KIOCore KF6::WindowSystem KF6::XmlGui KF6::GuiAddons KF6::PrisonScanner
+ )
++
++ecm_add_test(
++    OcrTest.cpp
++    ../src/OcrManager.cpp
++    ../src/MultilingualOcr.cpp
++    ../src/OcrUtils.cpp
++    ../src/TesseractRuntimeLoader.cpp
++    ${CMAKE_CURRENT_BINARY_DIR}/settings.cpp
++    ${CMAKE_CURRENT_BINARY_DIR}/spectacle_debug.cpp
++    TEST_NAME ocr_test
++    LINK_LIBRARIES Qt::Test Qt::Widgets Qt::Qml KF6::I18n KF6::ConfigGui
++)
++target_include_directories(ocr_test PRIVATE ${PROJECT_BINARY_DIR}/src)
++target_compile_options(ocr_test PRIVATE -fexceptions)
++
++ecm_add_test(
++    RegionDetectorTest.cpp
++    ../src/Gui/RegionDetector.cpp
++    ../src/OcrUtils.cpp
++    TEST_NAME region_detector_test
++    LINK_LIBRARIES Qt::Test Qt::Widgets ${OpenCV_LIBRARIES}
++)
++target_include_directories(region_detector_test PRIVATE ${OpenCV_INCLUDE_DIRS})
++target_compile_options(region_detector_test PRIVATE -fexceptions)
++
++ecm_add_test(
++    GuiWorkflowTest.cpp
++    ../src/Gui/PinnedImageWindow.cpp
++    ../src/Gui/OcrResultDialog.cpp
++    TEST_NAME gui_workflow_test
++    LINK_LIBRARIES Qt::Test Qt::Widgets Qt::DBus KF6::I18n KF6::WindowSystem LayerShellQt::Interface
++)
++set_tests_properties(ocr_test region_detector_test gui_workflow_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
++
++ecm_add_test(
++    MultilingualOcrTest.cpp
++    ../src/MultilingualOcr.cpp
++    ../src/OcrManager.cpp
++    ../src/OcrUtils.cpp
++    ../src/TesseractRuntimeLoader.cpp
++    ${CMAKE_CURRENT_BINARY_DIR}/settings.cpp
++    ${CMAKE_CURRENT_BINARY_DIR}/spectacle_debug.cpp
++    TEST_NAME multilingual_ocr_test
++    LINK_LIBRARIES Qt::Test Qt::Widgets Qt::Qml KF6::I18n KF6::ConfigGui
++)
++target_include_directories(multilingual_ocr_test PRIVATE ${PROJECT_BINARY_DIR}/src)
++target_compile_options(multilingual_ocr_test PRIVATE -fexceptions)
++target_compile_definitions(multilingual_ocr_test PRIVATE SPECTACLE_TEST_OCR_HELPER="${PROJECT_SOURCE_DIR}/src/Ocr/recognize.py")
++set_tests_properties(multilingual_ocr_test PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
++
++find_package(Python3 REQUIRED COMPONENTS Interpreter)
++add_test(NAME ocr_layout_test
++    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/OcrLayoutTest.py ${PROJECT_SOURCE_DIR}/src/Ocr/recognize.py)
+diff --git a/tests/GuiWorkflowTest.cpp b/tests/GuiWorkflowTest.cpp
+new file mode 100644
+index 00000000..388dfcda
+--- /dev/null
++++ b/tests/GuiWorkflowTest.cpp
+@@ -0,0 +1,252 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "Gui/OcrResultDialog.h"
++#include "Gui/PinnedImageWindow.h"
++
++#include <QApplication>
++#include <QClipboard>
++#include <QComboBox>
++#include <QDBusConnection>
++#include <QDBusInterface>
++#include <QDBusReply>
++#include <QDir>
++#include <QFile>
++#include <QJsonArray>
++#include <QJsonDocument>
++#include <QJsonObject>
++#include <QPainter>
++#include <QPointer>
++#include <QProcess>
++#include <QPushButton>
++#include <QScreen>
++#include <QSignalSpy>
++#include <QTemporaryDir>
++#include <QTest>
++#include <QTextEdit>
++
++using namespace Qt::StringLiterals;
++
++class GuiWorkflowTest : public QObject
++{
++    Q_OBJECT
++    Q_CLASSINFO("D-Bus Interface", "org.kde.spectacle.PinWindowTest")
++    QString mWindowState;
++
++public Q_SLOTS:
++    void reportWindowState(const QString &state)
++    {
++        mWindowState = state;
++    }
++
++private:
++    static void savePreview(QWidget *widget, const QString &name)
++    {
++        const auto directory = qEnvironmentVariable("SPECTACLE_TEST_ARTIFACT_DIR");
++        if (!directory.isEmpty()) {
++            QDir().mkpath(directory);
++            QVERIFY(widget->grab().save(directory + u'/' + name + u".png"_s));
++        }
++    }
++
++private Q_SLOTS:
++    void editableOcrResult()
++    {
++        QPointer<OcrResultDialog> dialog = new OcrResultDialog;
++        dialog->setResult(u"中文截图识别\nSpectacle screenshot\n日本語のテスト"_s, u"Text copied to clipboard. Languages: chi_sim + eng + jpn"_s);
++        dialog->show();
++        QTest::qWait(50);
++        auto editor = dialog->findChild<QTextEdit *>();
++        QVERIFY(editor);
++        QVERIFY(!editor->isReadOnly());
++        QCOMPARE(editor->toPlainText().split(u'\n').size(), 3);
++        savePreview(dialog, u"ocr-result"_s);
++        dialog->close();
++        QTRY_VERIFY(dialog.isNull());
++    }
++
++    void pinCopiesOriginalAndCloses()
++    {
++        QImage image(480, 240, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        QFont font(u"Noto Sans CJK SC"_s);
++        font.setPixelSize(26);
++        painter.setFont(font);
++        painter.drawText(QRect(20, 20, 440, 200), Qt::AlignCenter, u"中文截图 · Hello · 日本語\nPinned reference"_s);
++        painter.end();
++        QPointer<PinnedImageWindow> pin = new PinnedImageWindow(image, QPoint(30, 30));
++        QTest::qWait(50);
++        QVERIFY(pin->isVisible());
++        QVERIFY(pin->windowFlags().testFlag(Qt::WindowStaysOnTopHint));
++        pin->activateWindow();
++        QTest::qWait(50);
++        QTest::keyClick(pin, Qt::Key_C, Qt::ControlModifier);
++        QCOMPARE(QApplication::clipboard()->image(), image);
++        savePreview(pin, u"pinned-image"_s);
++        QTest::keyClick(pin, Qt::Key_Escape);
++        QTRY_VERIFY(pin.isNull());
++    }
++
++    void doubleClickClosesPin()
++    {
++        QImage image(240, 120, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPointer<PinnedImageWindow> pin = new PinnedImageWindow(image, QPoint(100, 100));
++        QTest::qWait(50);
++        QTest::mouseDClick(pin, Qt::LeftButton, Qt::NoModifier, QPoint(50, 50));
++        QTRY_VERIFY(pin.isNull());
++    }
++
++    void ocrRetryKeepsOriginalImage()
++    {
++        QPointer<OcrResultDialog> dialog = new OcrResultDialog;
++        QImage image(200, 100, QImage::Format_RGB32);
++        image.fill(Qt::red);
++        dialog->setSourceImage(image, {});
++        image.fill(Qt::blue); // Simulate a newer screenshot in the viewer.
++        dialog->setResult(u"Previous result"_s, u"Ready"_s);
++        auto languages = dialog->findChild<QComboBox *>();
++        auto retry = dialog->findChild<QPushButton *>(u"ocrRetryButton"_s);
++        QVERIFY(languages);
++        QVERIFY(retry);
++        QSignalSpy request(dialog, &OcrResultDialog::recognitionRequested);
++        languages->setCurrentIndex(languages->findData(u"jpn+eng"_s));
++        retry->click();
++        QCOMPARE(request.count(), 1);
++        QCOMPARE(qvariant_cast<QImage>(request.first().at(0)).pixelColor(0, 0), QColor(Qt::red));
++        QCOMPARE(request.first().at(1).toString(), u"jpn+eng"_s);
++        dialog->setBusy(true);
++        QVERIFY(!retry->isEnabled());
++        QVERIFY(!languages->isEnabled());
++        dialog->close();
++        QTRY_VERIFY(dialog.isNull());
++    }
++
++    void compositorDragAndClose()
++    {
++        const auto inputTool = qEnvironmentVariable("SPECTACLE_TEST_WAYLAND_INPUT");
++        if (inputTool.isEmpty() || QGuiApplication::platformName() != u"wayland"_s) {
++            QSKIP("Run in an isolated KWin session with SPECTACLE_TEST_WAYLAND_INPUT to verify compositor input");
++        }
++        auto input = [&inputTool](const QStringList &arguments) {
++            QProcess process;
++            process.start(inputTool, arguments);
++            QVERIFY(process.waitForStarted());
++            // Process native Wayland events while the separate client moves the pointer.
++            QTRY_COMPARE_WITH_TIMEOUT(process.state(), QProcess::NotRunning, 5000);
++            QCOMPARE(process.exitCode(), 0);
++        };
++        QImage image(240, 120, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPointer<PinnedImageWindow> pin = new PinnedImageWindow(image, QPoint(100, 100));
++        QTest::qWait(300);
++        input({u"drag"_s, u"120"_s, u"120"_s, u"420"_s, u"320"_s});
++        QTest::qWait(200);
++        // The click is outside the original pin. Closing proves the compositor
++        // moved the actual surface, rather than just our cached coordinates.
++        input({u"doubleclick"_s, u"440"_s, u"340"_s});
++        QTRY_VERIFY(pin.isNull());
++
++        pin = new PinnedImageWindow(image, QPoint(100, 100));
++        QTest::qWait(300);
++        input({u"click"_s, u"140"_s, u"140"_s});
++        input({u"key"_s, u"1"_s}); // Linux KEY_ESC, delivered by the compositor.
++        QTRY_VERIFY(pin.isNull());
++
++        QPointer<PinnedImageWindow> oldWindow = new PinnedImageWindow(image, QPoint(100, 100));
++        QTest::qWait(300);
++        input({u"click"_s, u"140"_s, u"140"_s});
++        pin = new PinnedImageWindow(image, QPoint(400, 300));
++        oldWindow->close();
++        QTest::qWait(300);
++        // No activation or click on the new pin: Escape must work immediately
++        // after replacing the previously focused capture window.
++        input({u"key"_s, u"1"_s});
++        QTRY_VERIFY(pin.isNull());
++    }
++
++    void compositorScreenAndWindowType()
++    {
++        const auto inputTool = qEnvironmentVariable("SPECTACLE_TEST_WAYLAND_INPUT");
++        if (inputTool.isEmpty() || QGuiApplication::platformName() != u"wayland"_s) {
++            QSKIP("Run tests/run-wayland-tests.sh for compositor window and output checks");
++        }
++        QVERIFY(QGuiApplication::screens().size() >= 2);
++        // Match the real setup's unequal fractional scales inside the isolated
++        // compositor. The user's output configuration is never involved.
++        const auto firstScreen = QGuiApplication::screens().first();
++        const auto secondScreen = QGuiApplication::screens().at(1);
++        QProcess scale;
++        scale.start(u"kscreen-doctor"_s, {u"output.%1.scale.1.5"_s.arg(firstScreen->name()), u"output.%1.scale.1.25"_s.arg(secondScreen->name())});
++        QVERIFY(scale.waitForStarted());
++        QTRY_COMPARE_WITH_TIMEOUT(scale.state(), QProcess::NotRunning, 10000);
++        QCOMPARE(scale.exitCode(), 0);
++        QTest::qWait(250);
++        auto bus = QDBusConnection::sessionBus();
++        QVERIFY(bus.registerService(u"org.kde.spectacle.PinWindowTest"_s));
++        QVERIFY(bus.registerObject(u"/probe"_s, this, QDBusConnection::ExportAllSlots));
++        QDBusInterface scripting(u"org.kde.KWin"_s, u"/Scripting"_s, u"org.kde.kwin.Scripting"_s);
++        if (qEnvironmentVariableIsSet("SPECTACLE_TEST_KAROUSEL")) {
++            QDBusReply<bool> loaded = scripting.call(u"isScriptLoaded"_s, u"karousel"_s);
++            QVERIFY(loaded.isValid() && loaded.value());
++        }
++        QTemporaryDir directory;
++        QFile script(directory.filePath(u"query.js"_s));
++        QVERIFY(script.open(QIODevice::WriteOnly));
++        script.write(
++            uR"(
++const states = workspace.windowList().filter(w => w.pid === %1).map(w => ({
++    normal: w.normalWindow, utility: w.utility, output: w.output.name, scale: w.output.devicePixelRatio,
++    x: w.frameGeometry.x, y: w.frameGeometry.y,
++    width: w.frameGeometry.width, height: w.frameGeometry.height,
++    skipTaskbar: w.skipTaskbar, skipPager: w.skipPager
++}));
++callDBus("org.kde.spectacle.PinWindowTest", "/probe", "org.kde.spectacle.PinWindowTest", "reportWindowState", JSON.stringify(states));
++)"_s.arg(QCoreApplication::applicationPid())
++                .toUtf8());
++        script.close();
++
++        QImage image(450, 270, QImage::Format_RGB32);
++        image.setDevicePixelRatio(1.5);
++        image.fill(Qt::white);
++        // Creating a normal window also exercises Karousel's layout updates.
++        QWidget ordinaryWindow;
++        ordinaryWindow.show();
++        for (auto targetScreen : QGuiApplication::screens()) {
++            const auto expected = targetScreen->geometry().topLeft() + QPoint(120, 100);
++            QPointer<PinnedImageWindow> pin = new PinnedImageWindow(image, expected, targetScreen);
++            QTest::qWait(500);
++            mWindowState.clear();
++            QDBusReply<int> id = scripting.call(u"loadScript"_s, script.fileName(), u"spectacle-pin-probe"_s);
++            QVERIFY(id.isValid() && id.value() >= 0);
++            QDBusInterface probe(u"org.kde.KWin"_s, u"/Scripting/Script%1"_s.arg(id.value()), u"org.kde.kwin.Script"_s);
++            probe.call(u"run"_s);
++            QTRY_VERIFY(!mWindowState.isEmpty());
++            scripting.call(u"unloadScript"_s, u"spectacle-pin-probe"_s);
++            const auto windows = QJsonDocument::fromJson(mWindowState.toUtf8()).array();
++            int tools = 0;
++            for (const auto &value : windows) {
++                const auto window = value.toObject();
++                if (!window.value(u"utility"_s).toBool()) {
++                    continue;
++                }
++                ++tools;
++                QVERIFY(!window.value(u"normal"_s).toBool());
++                QVERIFY(window.value(u"skipTaskbar"_s).toBool());
++                QCOMPARE(window.value(u"output"_s).toString(), targetScreen->name());
++                QCOMPARE(window.value(u"scale"_s).toDouble(), targetScreen == firstScreen ? 1.5 : 1.25);
++                QCOMPARE(window.value(u"x"_s).toInt(), expected.x());
++                QCOMPARE(window.value(u"y"_s).toInt(), expected.y());
++                QCOMPARE(window.value(u"width"_s).toInt(), image.deviceIndependentSize().width());
++                QCOMPARE(window.value(u"height"_s).toInt(), image.deviceIndependentSize().height());
++            }
++            QCOMPARE(tools, 1);
++            pin->close();
++            QTRY_VERIFY(pin.isNull());
++        }
++        bus.unregisterObject(u"/probe"_s);
++        bus.unregisterService(u"org.kde.spectacle.PinWindowTest"_s);
++    }
++};
++
++QTEST_MAIN(GuiWorkflowTest)
++#include "GuiWorkflowTest.moc"
+diff --git a/tests/MultilingualOcrTest.cpp b/tests/MultilingualOcrTest.cpp
+new file mode 100644
+index 00000000..ef240ff8
+--- /dev/null
++++ b/tests/MultilingualOcrTest.cpp
+@@ -0,0 +1,220 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "MultilingualOcr.h"
++#include "OcrManager.h"
++
++#include <QDir>
++#include <QPainter>
++#include <QSignalSpy>
++#include <QStandardPaths>
++#include <QTest>
++#include <algorithm>
++#include <numeric>
++
++using namespace Qt::StringLiterals;
++
++class MultilingualOcrTest : public QObject
++{
++    Q_OBJECT
++
++    static QString withoutWhitespace(QString text)
++    {
++        text.removeIf([](QChar character) {
++            return character.isSpace();
++        });
++        return text;
++    }
++
++    static int editDistance(const QString &expected, const QString &actual)
++    {
++        QList<int> row(actual.size() + 1);
++        std::iota(row.begin(), row.end(), 0);
++        for (int i = 1; i <= expected.size(); ++i) {
++            int diagonal = row[0];
++            row[0] = i;
++            for (int j = 1; j <= actual.size(); ++j) {
++                const int previous = row[j];
++                row[j] = qMin(qMin(row[j] + 1, row[j - 1] + 1), diagonal + (expected[i - 1] != actual[j - 1]));
++                diagonal = previous;
++            }
++        }
++        return row.last();
++    }
++
++private Q_SLOTS:
++    void initTestCase()
++    {
++        QStandardPaths::setTestModeEnabled(true);
++        qputenv("SPECTACLE_OCR_HELPER", SPECTACLE_TEST_OCR_HELPER);
++        if (!qEnvironmentVariableIsSet("SPECTACLE_OCR_ASSETS")) {
++            qputenv("SPECTACLE_OCR_ASSETS", "/usr/share/spectacle/ocr");
++        }
++        if (!MultilingualOcr::isAvailable()) {
++            QSKIP("Install the packaged multilingual models or set SPECTACLE_OCR_ASSETS");
++        }
++    }
++
++    void mixedScreenshot_data()
++    {
++        QTest::addColumn<int>("fontSize");
++        QTest::addColumn<bool>("dark");
++        QTest::newRow("mixed-paragraphs") << 22 << false;
++        QTest::newRow("small-ui-text") << 16 << false;
++        QTest::newRow("dark-ui-text") << 18 << true;
++    }
++
++    void mixedScreenshot()
++    {
++        QFETCH(int, fontSize);
++        QFETCH(bool, dark);
++        const QStringList lines{
++            u"截图文字识别 Hello world 日本語のテスト"_s,
++            u"保存截图到剪贴板 Screenshot copied to clipboard"_s,
++            u"日本語の文章を正しく読み取ります。画像から文字を認識します。"_s,
++            u"请点击确定按钮，然后选择文件。ファイルを選択してください。"_s,
++            u"繁體中文測試：軟體開發與螢幕擷取 Screenshot 12345"_s,
++        };
++        QImage image(1250, 320, QImage::Format_RGB32);
++        image.fill(dark ? QColor(30, 30, 30) : Qt::white);
++        QPainter painter(&image);
++        QFont font(u"Noto Sans CJK SC"_s);
++        font.setPixelSize(fontSize);
++        painter.setFont(font);
++        painter.setPen(dark ? Qt::white : Qt::black);
++        for (int i = 0; i < lines.size(); ++i) {
++            painter.drawText(QPoint(20, 40 + i * 56), lines[i]);
++        }
++        painter.end();
++        if (const auto directory = qEnvironmentVariable("SPECTACLE_TEST_ARTIFACT_DIR"); !directory.isEmpty()) {
++            QDir().mkpath(directory);
++            image.save(directory + u"/mixed-%1-%2.png"_s.arg(fontSize).arg(dark));
++        }
++        OcrManager manager;
++        QTRY_COMPARE(manager.status(), OcrManager::OcrStatus::Ready);
++        QSignalSpy results(&manager, &OcrManager::textRecognized);
++        manager.recognizeText(image);
++        QCOMPARE(manager.engineName(), u"PP-OCRv5"_s);
++        QTRY_COMPARE_WITH_TIMEOUT(results.count(), 1, 65000);
++        QVERIFY2(results.first().at(2).toBool(), qPrintable(manager.errorMessage()));
++        const auto text = results.first().at(0).toString();
++        qInfo().noquote() << text;
++        const auto expected = withoutWhitespace(lines.join(u'\n'));
++        const auto actual = withoutWhitespace(text);
++        const auto distance = editDistance(expected, actual);
++        QVERIFY2(distance <= expected.size() * 0.04, qPrintable(u"%1 wrong characters: %2"_s.arg(distance).arg(text)));
++        QVERIFY(actual.contains(u"Helloworld"_s));
++        QVERIFY(text.contains(u"日本語"_s));
++        QVERIFY(text.contains(u"ファイル"_s));
++        QVERIFY(text.contains(u"截图"_s));
++        QVERIFY(text.contains(u"繁體中文"_s));
++    }
++
++    void englishScreenshot_data()
++    {
++        QTest::addColumn<int>("fontSize");
++        QTest::addColumn<bool>("dark");
++        QTest::newRow("english-small") << 14 << false;
++        QTest::newRow("english-normal") << 18 << false;
++        QTest::newRow("english-dark") << 18 << true;
++    }
++
++    void englishScreenshot()
++    {
++        QFETCH(int, fontSize);
++        QFETCH(bool, dark);
++        const QStringList lines{
++            u"The quick brown fox jumps over the lazy dog."_s,
++            u"Don't merge these words: signal handler, data source, and file name."_s,
++            u"Please select a file, then click Save As to continue."_s,
++            u"Error: Connection timed out after 30 seconds (retry #2)."_s,
++            u"Version 6.7.5 / Ctrl+Shift+P / screenshot_2026-10-03.png"_s,
++            u"https://example.com/docs/getting-started?lang=en"_s,
++            u"Mixed CASE: OpenAI, KDE Plasma, OCR, Qt6 and Linux."_s,
++        };
++        QImage image(1150, 360, QImage::Format_RGB32);
++        image.fill(dark ? QColor(30, 30, 30) : Qt::white);
++        QPainter painter(&image);
++        QFont font(u"Noto Sans"_s);
++        font.setPixelSize(fontSize);
++        painter.setFont(font);
++        painter.setPen(dark ? Qt::white : Qt::black);
++        for (int i = 0; i < lines.size(); ++i) {
++            painter.drawText(QPoint(20, 35 + i * 46), lines[i]);
++        }
++        painter.end();
++        const auto result = MultilingualOcr::recognize(image);
++        QVERIFY2(result.success, qPrintable(result.error));
++        // Unlike the mixed-script character check, count spaces and punctuation.
++        // Joining English words together is a user-visible recognition error.
++        const auto expected = lines.join(u'\n');
++        const auto distance = editDistance(expected, result.text);
++        QVERIFY2(distance <= expected.size() * 0.01, qPrintable(u"%1 errors: %2"_s.arg(distance).arg(result.text)));
++        QVERIFY(result.text.contains(u"signal handler, data source, and file name"_s));
++        QVERIFY(result.text.contains(u"Connection timed out after 30 seconds"_s));
++        QVERIFY(result.text.contains(u"KDE Plasma"_s));
++    }
++
++    void commandScreenshotKeepsLines()
++    {
++        QImage image(1400, 250, QImage::Format_RGB32);
++        image.fill(QColor(28, 30, 40));
++        QPainter painter(&image);
++        QFont font(u"Noto Sans Mono"_s);
++        font.setPixelSize(18);
++        painter.setFont(font);
++        const QStringList command{u"qdbus6"_s, u"org.kde.spectacle"_s, u"/MainApplication"_s, u"org.qtproject.Qt.QCoreApplication.quit"_s};
++        int x = 60;
++        // Syntax colors and larger gaps encourage the detector to produce
++        // separate boxes, as in the reported command screenshot.
++        for (int i = 0; i < command.size(); ++i) {
++            painter.setPen(i % 2 ? QColor(230, 230, 230) : QColor(120, 190, 240));
++            painter.drawText(QPoint(x, 45), command[i]);
++            x += painter.fontMetrics().horizontalAdvance(command[i]) + 28;
++        }
++        painter.setPen(Qt::white);
++        painter.drawText(QPoint(20, 95), u"Restarted Spectacle"_s);
++        painter.drawText(QPoint(20, 145), u"Show details"_s);
++        painter.end();
++        const auto result = MultilingualOcr::recognize(image);
++        QVERIFY2(result.success, qPrintable(result.error));
++        const auto lines = result.text.split(u'\n');
++        QCOMPARE(lines.size(), 3);
++        QVERIFY2(lines[0].startsWith(u"    "_s), qPrintable(result.text));
++        QCOMPARE(lines[0].simplified(), command.join(u' '));
++        QCOMPARE(lines[1].trimmed(), u"Restarted Spectacle"_s);
++        QCOMPARE(lines[2].trimmed(), u"Show details"_s);
++    }
++
++    void detectsBorderlessContentOnBothScreens()
++    {
++        QImage image(1600, 420, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        QFont font(u"Noto Sans"_s);
++        font.setPixelSize(22);
++        painter.setFont(font);
++        painter.setPen(Qt::black);
++        for (const int left : {40, 840}) {
++            painter.drawText(QPoint(left, 80), u"A borderless paragraph of text"_s);
++            painter.drawText(QPoint(left, 116), u"with several lines to capture."_s);
++            painter.drawText(QPoint(left, 152), u"Select the whole content block."_s);
++        }
++        painter.end();
++        const QRectF canvas(-800, 50, 1280, 336);
++        const QList<QRectF> screens{QRectF(-800, 50, 640, 336), QRectF(-160, 50, 640, 336)};
++        const auto result = MultilingualOcr::detectTextRegions(image, canvas, screens);
++        QVERIFY2(result.success, qPrintable(result.error));
++        for (const int left : {40, 840}) {
++            const QPointF betweenLines(canvas.x() + (left + 80) * 0.8, canvas.y() + 85 * 0.8);
++            const QPointF lastLine(canvas.x() + (left + 80) * 0.8, canvas.y() + 144 * 0.8);
++            QVERIFY(std::any_of(result.regions.cbegin(), result.regions.cend(), [&](const QRectF &rect) {
++                return rect.contains(betweenLines) && rect.contains(lastLine);
++            }));
++        }
++        for (const auto &region : result.regions) {
++            QVERIFY(screens[0].contains(region) || screens[1].contains(region));
++        }
++    }
++};
++
++QTEST_MAIN(MultilingualOcrTest)
++#include "MultilingualOcrTest.moc"
+diff --git a/tests/OcrLayoutTest.py b/tests/OcrLayoutTest.py
+new file mode 100644
+index 00000000..f95973f2
+--- /dev/null
++++ b/tests/OcrLayoutTest.py
+@@ -0,0 +1,68 @@
++#!/usr/bin/env python3
++# SPDX-License-Identifier: LGPL-2.0-or-later
++"""Regression cases for OCR detector boxes, independent of model inference."""
++import importlib.util
++from pathlib import Path
++import sys
++import unittest
++
++sys.dont_write_bytecode = True
++
++spec = importlib.util.spec_from_file_location("ocr_worker", Path(sys.argv.pop(1)))
++worker = importlib.util.module_from_spec(spec)
++spec.loader.exec_module(worker)
++
++
++def box(x, y, width, height=16):
++    return [[x, y], [x + width, y], [x + width, y + height], [x, y + height]]
++
++
++class OcrLayoutTest(unittest.TestCase):
++    def test_command_tokens_on_one_visual_line(self):
++        words = ["qdbus6", "org.kde.spectacle", "/MainApplication", "org.qtproject.Qt.QCoreApplication.quit"]
++        boxes = []
++        x = 20
++        for index, word in enumerate(words):
++            boxes.append(box(x, 30 + index % 2, len(word) * 8))
++            x += (len(word) + 1) * 8
++        text = worker.format_lines(worker.group_text_boxes(boxes, words))
++        self.assertEqual(text, " ".join(words))
++
++    def test_actual_newlines_indentation_and_blank_line(self):
++        words = ["qdbus6", "org.kde.spectacle", "--help", "Restarted", "Spectacle"]
++        boxes = [box(20, 10, 48), box(76, 10, 128), box(52, 40, 48),
++                 box(20, 100, 72), box(100, 100, 72)]
++        self.assertEqual(worker.format_lines(worker.group_text_boxes(boxes, words)),
++                         "qdbus6 org.kde.spectacle\n    --help\n\nRestarted Spectacle")
++
++    def test_distant_columns_are_not_one_command(self):
++        lines = worker.group_text_boxes([box(20, 10, 48), box(600, 10, 48)], ["qdbus6", "Cancel"])
++        self.assertEqual(len(lines), 2)
++
++    def test_chinese_fragments_do_not_gain_word_spaces(self):
++        lines = worker.group_text_boxes([box(20, 10, 32), box(54, 10, 32)], ["截图", "文字"])
++        self.assertEqual(worker.format_lines(lines), "截图文字")
++
++    def test_detection_order_does_not_scramble_words(self):
++        lines = worker.group_text_boxes([box(100, 10, 72), box(20, 10, 72)], ["Spectacle", "Restarted"])
++        self.assertEqual(worker.format_lines(lines), "Restarted Spectacle")
++
++    def test_borderless_paragraphs_and_columns(self):
++        boxes = [box(20, 10, 180), box(20, 34, 160), box(20, 98, 180), box(20, 122, 150),
++                 box(500, 10, 180), box(500, 34, 160)]
++        regions = worker.content_regions_from_boxes(boxes, 800, 200)
++
++        def contains(rect, x, y):
++            return rect[0] <= x <= rect[0] + rect[2] and rect[1] <= y <= rect[1] + rect[3]
++
++        # A paragraph includes the whitespace between its lines, not just glyphs.
++        self.assertTrue(any(contains(r, 50, 15) and contains(r, 50, 45) and not contains(r, 50, 110) for r in regions))
++        self.assertTrue(any(contains(r, 50, 15) and contains(r, 50, 130) for r in regions))
++        self.assertFalse(any(contains(r, 50, 15) and contains(r, 550, 15) for r in regions))
++
++    def test_single_text_line_has_no_redundant_block_variants(self):
++        self.assertEqual(len(worker.content_regions_from_boxes([box(20, 10, 180)], 800, 200)), 1)
++
++
++if __name__ == "__main__":
++    unittest.main()
+diff --git a/tests/OcrTest.cpp b/tests/OcrTest.cpp
+new file mode 100644
+index 00000000..55f83d43
+--- /dev/null
++++ b/tests/OcrTest.cpp
+@@ -0,0 +1,203 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "OcrManager.h"
++#include "OcrUtils.h"
++#include "settings.h"
++
++#include <QApplication>
++#include <QClipboard>
++#include <QFile>
++#include <QPainter>
++#include <QSignalSpy>
++#include <QStandardPaths>
++#include <QTemporaryDir>
++#include <QTest>
++
++using namespace Qt::StringLiterals;
++
++class OcrTest : public QObject
++{
++    Q_OBJECT
++    QString mDataPath;
++    QByteArray mOldPrefix;
++
++    static QImage textImage(const QString &text)
++    {
++        QImage image(1000, 130, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        QFont font(u"Noto Sans CJK SC"_s);
++        font.setPixelSize(38);
++        painter.setFont(font);
++        painter.setPen(Qt::black);
++        painter.drawText(QRect(25, 20, 950, 90), Qt::AlignVCenter, text);
++        return image;
++    }
++
++private Q_SLOTS:
++    void initTestCase()
++    {
++        qputenv("SPECTACLE_OCR_HELPER", "/nonexistent/spectacle-test-helper");
++        mDataPath = OcrUtils::findTessdataPath();
++        mOldPrefix = qgetenv("TESSDATA_PREFIX");
++        QStandardPaths::setTestModeEnabled(true);
++        if (mDataPath.isEmpty() || !TesseractRuntimeLoader::instance().ensureLoaded()) {
++            QSKIP("Tesseract runtime and language data are required for recognition integration tests");
++        }
++    }
++
++    void init()
++    {
++        qputenv("TESSDATA_PREFIX", QFile::encodeName(mDataPath));
++        Settings::setOcrLanguages({u"eng"_s});
++    }
++
++    void cleanupTestCase()
++    {
++        if (mOldPrefix.isNull()) {
++            qunsetenv("TESSDATA_PREFIX");
++        } else {
++            qputenv("TESSDATA_PREFIX", mOldPrefix);
++        }
++    }
++
++    void initializationNotifies()
++    {
++        OcrManager manager;
++        QSignalSpy status(&manager, &OcrManager::statusChanged);
++        QCOMPARE(manager.status(), OcrManager::OcrStatus::Initializing);
++        QTRY_VERIFY(manager.isAvailable());
++        QCOMPARE(manager.status(), OcrManager::OcrStatus::Ready);
++        QCOMPARE(status.count(), 1);
++    }
++
++    void missingLanguageData()
++    {
++        QTemporaryDir dir;
++        QVERIFY(dir.isValid());
++        qputenv("TESSDATA_PREFIX", QFile::encodeName(dir.path()));
++        OcrManager manager;
++        QTRY_COMPARE(manager.status(), OcrManager::OcrStatus::Error);
++        QVERIFY(!manager.isAvailable());
++        QVERIFY(!manager.errorMessage().isEmpty());
++    }
++
++    void initializesWithoutEnglish()
++    {
++        const auto japanese = mDataPath + u"/jpn.traineddata"_s;
++        if (!QFile::exists(japanese)) {
++            QSKIP("Japanese language data is not installed");
++        }
++        QTemporaryDir dir;
++        QVERIFY(QFile::link(japanese, dir.filePath(u"jpn.traineddata"_s)));
++        qputenv("TESSDATA_PREFIX", QFile::encodeName(dir.path()));
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QCOMPARE(manager.currentLanguageCode(), u"jpn"_s);
++    }
++
++    void brokenLanguagePreservesWorkingEngine()
++    {
++        QTemporaryDir dir;
++        QVERIFY(QFile::link(mDataPath + u"/eng.traineddata"_s, dir.filePath(u"eng.traineddata"_s)));
++        QFile broken(dir.filePath(u"jpn.traineddata"_s));
++        QVERIFY(broken.open(QIODevice::WriteOnly));
++        broken.write("invalid model");
++        broken.close();
++        qputenv("TESSDATA_PREFIX", QFile::encodeName(dir.path()));
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QSignalSpy result(&manager, &OcrManager::textRecognized);
++        manager.recognizeTextWithLanguage(textImage(u"Hello"_s), u"eng+jpn"_s);
++        QCOMPARE(result.count(), 1);
++        QVERIFY(!result.first().at(2).toBool());
++        QCOMPARE(manager.currentLanguageCode(), u"eng"_s);
++        QVERIFY(manager.isAvailable());
++    }
++
++    void recognition_data()
++    {
++        QTest::addColumn<QString>("languages");
++        QTest::addColumn<QString>("input");
++        QTest::addColumn<QStringList>("expected");
++        QTest::newRow("english") << u"eng"_s << u"Spectacle screenshot 12345"_s << QStringList{u"Spectacle"_s, u"12345"_s};
++        QTest::newRow("chinese") << u"chi_sim+eng"_s << u"中文截图识别 Hello 12345"_s << QStringList{u"中文"_s, u"截图"_s, u"Hello"_s};
++        QTest::newRow("japanese") << u"jpn+eng"_s << u"日本語のテスト Hello 12345"_s << QStringList{u"日本語"_s, u"テスト"_s, u"Hello"_s};
++        QTest::newRow("mixed") << u"chi_sim+eng+jpn"_s << u"中文截图 Hello 日本語テスト"_s << QStringList{u"中文"_s, u"Hello"_s, u"テスト"_s};
++    }
++
++    void recognition()
++    {
++        QFETCH(QString, languages);
++        QFETCH(QString, input);
++        QFETCH(QStringList, expected);
++        const auto available = OcrUtils::availableLanguages(mDataPath);
++        for (const auto &code : languages.split(u'+')) {
++            if (!available.contains(code)) {
++                QSKIP("Language data for this case is not installed");
++            }
++        }
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QSignalSpy result(&manager, &OcrManager::textRecognized);
++        manager.recognizeTextWithLanguage(textImage(input), languages);
++        QCOMPARE(manager.status(), OcrManager::OcrStatus::Processing);
++        QTRY_COMPARE_WITH_TIMEOUT(result.count(), 1, 35000);
++        QVERIFY(result.first().at(2).toBool());
++        auto text = result.first().at(0).toString();
++        for (const auto &word : expected) {
++            QVERIFY2(text.remove(u' ').contains(word), qPrintable(text));
++        }
++        QCOMPARE(QApplication::clipboard()->text(), result.first().at(0).toString());
++        QCOMPARE(manager.currentLanguageCode(), u"eng"_s);
++        QCOMPARE(Settings::ocrLanguages(), QStringList{u"eng"_s});
++    }
++
++    void blankImagePreservesClipboard()
++    {
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QSignalSpy result(&manager, &OcrManager::textRecognized);
++        QApplication::clipboard()->setText(u"keep me"_s);
++        QImage blank(300, 200, QImage::Format_RGB32);
++        blank.fill(Qt::white);
++        manager.recognizeText(blank);
++        QTRY_COMPARE_WITH_TIMEOUT(result.count(), 1, 35000);
++        QVERIFY(result.first().at(0).toString().isEmpty());
++        QCOMPARE(QApplication::clipboard()->text(), u"keep me"_s);
++    }
++
++    void languageChangeWaitsForRecognition()
++    {
++        if (!OcrUtils::availableLanguages(mDataPath).contains(u"jpn"_s)) {
++            QSKIP("Japanese language data is not installed");
++        }
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QSignalSpy result(&manager, &OcrManager::textRecognized);
++        manager.recognizeText(textImage(u"Spectacle screenshot 12345"_s));
++        manager.setLanguagesByCode({u"jpn"_s});
++        QCOMPARE(manager.currentLanguageCode(), u"eng"_s);
++        // A duplicate request must not emit a false completion for the active job.
++        manager.recognizeText(textImage(u"Second request"_s));
++        QCOMPARE(result.count(), 0);
++        QTRY_COMPARE_WITH_TIMEOUT(result.count(), 1, 35000);
++        QCOMPARE(result.first().at(1).toStringList(), QStringList{u"eng"_s});
++        QCOMPARE(manager.currentLanguageCode(), u"jpn"_s);
++        QCOMPARE(Settings::ocrLanguages(), QStringList{u"jpn"_s});
++    }
++
++    void missingRequestedLanguageIsReported()
++    {
++        OcrManager manager;
++        QTRY_VERIFY(manager.isAvailable());
++        QSignalSpy result(&manager, &OcrManager::textRecognized);
++        manager.recognizeTextWithLanguage(textImage(u"Hello"_s), u"eng+missing_language"_s);
++        QCOMPARE(result.count(), 1);
++        QVERIFY(!result.first().at(2).toBool());
++        QVERIFY(manager.errorMessage().contains(u"missing_language"_s));
++        QCOMPARE(manager.currentLanguageCode(), u"eng"_s);
++    }
++};
++
++QTEST_MAIN(OcrTest)
++#include "OcrTest.moc"
+diff --git a/tests/RegionDetectorTest.cpp b/tests/RegionDetectorTest.cpp
+new file mode 100644
+index 00000000..6e8843d9
+--- /dev/null
++++ b/tests/RegionDetectorTest.cpp
+@@ -0,0 +1,125 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "Gui/RegionDetector.h"
++#include "OcrUtils.h"
++
++#include <QPainter>
++#include <QTest>
++
++using namespace Qt::StringLiterals;
++
++class RegionDetectorTest : public QObject
++{
++    Q_OBJECT
++private Q_SLOTS:
++    void blankImage()
++    {
++        QImage image(800, 600, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QVERIFY(RegionDetector::detect(image, QRectF(0, 0, 800, 600)).isEmpty());
++        QVERIFY(RegionDetector::detect({}, {}).isEmpty());
++    }
++
++    void nestedRegionsAndCoordinates()
++    {
++        QImage image(1600, 1000, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        painter.setPen(QPen(Qt::black, 3));
++        painter.drawRect(100, 100, 1100, 700);
++        painter.drawRect(300, 250, 500, 300);
++        painter.end();
++        // Negative monitor origin and fractional scale.
++        const QRectF canvas(-1000, 50, 1280, 800);
++        const auto regions = RegionDetector::detect(image, canvas);
++        QVERIFY(regions.size() >= 2);
++        const QPointF point(-600, 350);
++        const auto candidates = RegionDetector::candidatesAt(regions, point);
++        QVERIFY(candidates.size() >= 2);
++        qreal previousArea = 0;
++        for (const auto &region : candidates) {
++            QVERIFY(canvas.contains(region));
++            QVERIFY(region.contains(point));
++            QVERIFY(region.width() * region.height() >= previousArea);
++            previousArea = region.width() * region.height();
++        }
++        QVERIFY(RegionDetector::candidatesAt(regions, QPointF(1000, 1000)).isEmpty());
++    }
++
++    void languageDefaults()
++    {
++        QCOMPARE(OcrUtils::preferredLanguages({u"osd"_s, u"jpn"_s, u"eng"_s, u"chi_sim"_s}), (QStringList{u"chi_sim"_s, u"eng"_s, u"jpn"_s}));
++        QVERIFY(OcrUtils::preferredLanguages({u"osd"_s}).isEmpty());
++        QCOMPARE(OcrUtils::configuredLanguages({u"missing"_s, u"jpn"_s, u"jpn"_s}, {u"eng"_s, u"jpn"_s}), QStringList{u"jpn"_s});
++    }
++
++    void transparentImage()
++    {
++        QImage image(100, 50, QImage::Format_ARGB32_Premultiplied);
++        image.fill(Qt::transparent);
++        image.setDevicePixelRatio(2);
++        image.setPixelColor(50, 25, Qt::black);
++        const auto prepared = OcrUtils::prepareImage(image);
++        QCOMPARE(prepared.size(), QSize(200, 100));
++        QCOMPARE(prepared.pixelColor(0, 0), QColor(Qt::white));
++        QVERIFY(prepared.pixelColor(100, 50).lightness() < 180);
++    }
++
++    void largePanelSurvivesBusyScreenshot()
++    {
++        QImage image(1800, 1000, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        painter.setPen(QPen(Qt::black, 2));
++        for (int row = 0; row < 26; ++row) {
++            for (int column = 0; column < 22; ++column) {
++                painter.drawRect(5 + column * 54, 5 + row * 37, 46, 29);
++            }
++        }
++        painter.drawRect(1300, 100, 400, 750);
++        painter.end();
++        const auto regions = RegionDetector::detect(image, QRectF(image.rect()));
++        const auto candidates = RegionDetector::candidatesAt(regions, QPointF(1500, 450));
++        QVERIFY(!candidates.isEmpty());
++        QVERIFY(candidates.first().width() >= 395);
++        QVERIFY(candidates.first().height() >= 745);
++    }
++
++    void perScreenDetectionKeepsSmallRegions()
++    {
++        QImage image(4800, 1200, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        painter.setPen(QPen(Qt::black, 2));
++        painter.drawRect(300, 400, 64, 42);
++        painter.drawRect(3300, 400, 64, 42);
++        painter.end();
++        const auto regions = RegionDetector::detect(image, QRectF(image.rect()), {QRectF(0, 0, 2400, 1200), QRectF(2400, 0, 2400, 1200)});
++        QVERIFY(!RegionDetector::candidatesAt(regions, QPointF(3320, 420)).isEmpty());
++        QVERIFY(!RegionDetector::candidatesAt(regions, QPointF(320, 420)).isEmpty());
++    }
++
++    void lowContrastPanel()
++    {
++        QImage image(800, 600, QImage::Format_RGB32);
++        image.fill(Qt::white);
++        QPainter painter(&image);
++        painter.setPen(QPen(QColor(239, 239, 239), 2));
++        painter.drawRoundedRect(120, 100, 420, 300, 12, 12);
++        painter.end();
++        const auto regions = RegionDetector::detect(image, QRectF(image.rect()));
++        QVERIFY(!RegionDetector::candidatesAt(regions, QPointF(300, 200)).isEmpty());
++    }
++
++    void asyncCandidatesKeepSelection()
++    {
++        const QRectF selected(100, 100, 400, 200);
++        const auto candidates =
++            RegionDetector::candidatesAt({selected.adjusted(-1, -1, 1, 1), QRectF(0, 0, 800, 600), QRectF(150, 130, 250, 50)}, QPointF(200, 150), selected);
++        QCOMPARE(candidates.size(), 3);
++        QVERIFY(candidates.contains(selected));
++        QVERIFY(!candidates.contains(selected.adjusted(-1, -1, 1, 1)));
++    }
++};
++
++QTEST_MAIN(RegionDetectorTest)
++#include "RegionDetectorTest.moc"
+diff --git a/tests/WaylandInput.c b/tests/WaylandInput.c
+new file mode 100644
+index 00000000..5cb780e9
+--- /dev/null
++++ b/tests/WaylandInput.c
+@@ -0,0 +1,74 @@
++/* SPDX-License-Identifier: LGPL-2.0-or-later */
++#include "fake-input.h"
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <unistd.h>
++#include <wayland-client.h>
++static struct org_kde_kwin_fake_input *input;
++static struct wl_display *display;
++static void global(void *data, struct wl_registry *registry, uint32_t name, const char *interface, uint32_t version)
++{
++    if (!strcmp(interface, "org_kde_kwin_fake_input"))
++        input = wl_registry_bind(registry, name, &org_kde_kwin_fake_input_interface, version < 6 ? version : 6);
++}
++static void removed(void *data, struct wl_registry *registry, uint32_t name)
++{
++}
++static void sync_input(void)
++{
++    wl_display_roundtrip(display);
++    usleep(50000);
++}
++static void move(double x, double y)
++{
++    org_kde_kwin_fake_input_pointer_motion_absolute(input, wl_fixed_from_double(x), wl_fixed_from_double(y));
++    sync_input();
++}
++static void button(int pressed)
++{
++    org_kde_kwin_fake_input_button(input, 272, pressed);
++    sync_input();
++}
++int main(int argc, char **argv)
++{
++    display = wl_display_connect(NULL);
++    if (!display)
++        return 2;
++    struct wl_registry *registry = wl_display_get_registry(display);
++    static const struct wl_registry_listener listener = {global, removed};
++    wl_registry_add_listener(registry, &listener, NULL);
++    wl_display_roundtrip(display);
++    if (!input) {
++        fprintf(stderr, "fake input protocol unavailable\n");
++        return 3;
++    }
++    org_kde_kwin_fake_input_authenticate(input, "Spectacle isolated tests", "Regression test in a private KWin session");
++    sync_input();
++    if (argc == 6 && !strcmp(argv[1], "drag")) {
++        double x = atof(argv[2]), y = atof(argv[3]), dx = atof(argv[4]) - x, dy = atof(argv[5]) - y;
++        move(x, y);
++        button(1);
++        for (int i = 1; i <= 10; i++)
++            move(x + dx * i / 10, y + dy * i / 10);
++        button(0);
++    } else if (argc == 4 && (!strcmp(argv[1], "click") || !strcmp(argv[1], "doubleclick"))) {
++        move(atof(argv[2]), atof(argv[3]));
++        button(1);
++        button(0);
++        if (!strcmp(argv[1], "doubleclick")) {
++            button(1);
++            button(0);
++        }
++    } else if (argc == 3 && !strcmp(argv[1], "key")) {
++        org_kde_kwin_fake_input_keyboard_key(input, atoi(argv[2]), 1);
++        sync_input();
++        org_kde_kwin_fake_input_keyboard_key(input, atoi(argv[2]), 0);
++        sync_input();
++    } else
++        return 4;
++    org_kde_kwin_fake_input_destroy(input);
++    wl_display_flush(display);
++    wl_display_disconnect(display);
++    return 0;
++}
+diff --git a/tests/run-wayland-tests.sh b/tests/run-wayland-tests.sh
+new file mode 100755
+index 00000000..1c6817fd
+--- /dev/null
++++ b/tests/run-wayland-tests.sh
+@@ -0,0 +1,42 @@
++#!/usr/bin/env bash
++# SPDX-License-Identifier: LGPL-2.0-or-later
++# Use a private compositor and desktop entry; never inject into the user's session.
++set -euo pipefail
++script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
++test_binary=$(realpath "${1:-$script_dir/../build-dev/bin/gui_workflow_test}")
++scratch=$(mktemp -d /tmp/spectacle-wayland-test.XXXXXX)
++trap 'rm -rf -- "$scratch"' EXIT
++mkdir -p "$scratch/runtime" "$scratch/share/applications" "$scratch/cache" "$scratch/config"
++karousel_dir="${SPECTACLE_TEST_KAROUSEL_DIR:-${XDG_DATA_HOME:-$HOME/.local/share}/kwin/scripts/karousel}"
++if [[ -d "$karousel_dir" ]]; then
++    mkdir -p "$scratch/share/kwin/scripts"
++    cp -a -- "$karousel_dir" "$scratch/share/kwin/scripts/karousel"
++    cat > "$scratch/config/kwinrc" <<'CONFIG'
++[Plugins]
++karouselEnabled=true
++[Script-karousel]
++tiledDesktops=.*
++CONFIG
++    export SPECTACLE_TEST_KAROUSEL=1
++fi
++chmod 700 "$scratch/runtime"
++wayland-scanner client-header /usr/share/plasma-wayland-protocols/fake-input.xml "$scratch/fake-input.h"
++wayland-scanner private-code /usr/share/plasma-wayland-protocols/fake-input.xml "$scratch/fake-input.c"
++cc -I"$scratch" "$script_dir/WaylandInput.c" "$scratch/fake-input.c" -lwayland-client -lm -o "$scratch/input"
++cat > "$scratch/share/applications/input.desktop" <<DESKTOP
++[Desktop Entry]
++Type=Application
++Name=Spectacle isolated input test
++Exec=$scratch/input
++NoDisplay=true
++X-KDE-Wayland-Interfaces=org_kde_kwin_fake_input
++DESKTOP
++export XDG_RUNTIME_DIR="$scratch/runtime"
++export XDG_DATA_HOME="$scratch/share"
++export XDG_CACHE_HOME="$scratch/cache"
++export XDG_CONFIG_HOME="$scratch/config"
++export QT_QPA_PLATFORM=wayland
++export SPECTACLE_TEST_WAYLAND_INPUT="$scratch/input"
++dbus-run-session -- kwin_wayland --virtual --width 1280 --height 900 --output-count 2 --scale 1.25 --no-lockscreen \
++    --no-global-shortcuts --no-kactivities --socket spectacle-test \
++    --exit-with-session "$test_binary compositorDragAndClose compositorScreenAndWindowType"
