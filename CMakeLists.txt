@@ -168,7 +168,9 @@ ecm_qt_install_logging_categories(EXPORT SPECTACLE FILE spectacle.categories DES
 
 feature_summary(WHAT ALL FATAL_ON_MISSING_REQUIRED_PACKAGES)
 
-file(GLOB_RECURSE ALL_CLANG_FORMAT_SOURCE_FILES *.cpp *.h)
+file(GLOB_RECURSE ALL_CLANG_FORMAT_SOURCE_FILES src/*.cpp src/*.h tests/*.cpp tests/*.h kconf_update/*.cpp)
+# Preset build directories must not become formatter inputs in another build.
+list(FILTER ALL_CLANG_FORMAT_SOURCE_FILES EXCLUDE REGEX "/(build[^/]*|_deps)/")
 kde_clang_format(${ALL_CLANG_FORMAT_SOURCE_FILES})
 
 kde_configure_git_pre_commit_hook(CHECKS CLANG_FORMAT)

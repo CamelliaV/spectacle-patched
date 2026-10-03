@@ -27,3 +27,7 @@ CMakeLists.txt.user*
 /cmake-build*
 .cache
 .flatpak-builder
+
+# Python worker/test bytecode
+__pycache__/
+*.py[cod]
