@@ -29,6 +29,8 @@
 
 class QEvent;
 
+class OcrResultDialog;
+
 class SpectacleCore : public QObject
 {
     Q_OBJECT
@@ -83,6 +85,7 @@ public:
     bool ocrAvailable() const;
     OcrManager::OcrStatus ocrStatus() const;
     Q_INVOKABLE QVariantMap ocrAvailableLanguages() const;
+    Q_INVOKABLE bool pinScreenshot();
     Q_INVOKABLE bool startOcrExtraction(const QString &languageCode = QString());
 
     void initGuiNoScreenshot();
@@ -160,7 +163,8 @@ private:
     void unityLauncherUpdate(const QVariantMap &properties) const;
     void setCurrentVideo(const QUrl &currentVideo);
     QUrl videoOutputUrl() const;
-    bool performOcrExtraction(const QString &languageCode);
+    bool performOcrExtraction(const QString &languageCode, const QImage &sourceImage = {});
+    OcrResultDialog *createOcrResultDialog();
     void updateGameModeShortcuts();
 
     static SpectacleCore *s_self;
@@ -168,6 +172,10 @@ private:
     StartMode m_startMode = StartMode::Gui;
     bool m_returnToViewer = false;
     bool m_ocrExportInProgress = false;
+    bool mPinExportInProgress = false;
+    QString mPendingOcrLanguage;
+    QPointer<OcrResultDialog> mOcrResultDialog;
+    std::unique_ptr<QEventLoopLocker> mOcrLoopLocker;
     bool m_quitAfterOcr = false;
     QUrl m_screenCaptureUrl;
     std::unique_ptr<ImagePlatform> m_imagePlatform;

@@ -59,6 +59,37 @@ MouseArea {
     anchors.fill: parent
     enabled: !SpectacleCore.videoPlatform.isRecording
 
+    QQC.Label {
+        anchors.top: parent.top
+        anchors.horizontalCenter: parent.horizontalCenter
+        anchors.topMargin: Kirigami.Units.largeSpacing
+        z: 100
+        visible: !SpectacleCore.videoMode
+        text: SelectionEditor.candidateLabel
+        textFormat: Text.PlainText
+        padding: Kirigami.Units.mediumSpacing
+        color: palette.windowText
+        background: FloatingBackground {
+            color: palette.window
+        }
+    }
+
+    Shortcut {
+        sequence: "Tab"
+        enabled: root.activeFocus && !SpectacleCore.videoMode && (!root.document || root.document.tool.isNoTool)
+        onActivated: SelectionEditor.cycleCandidate(false)
+    }
+    Shortcut {
+        sequence: "Shift+Tab"
+        enabled: root.activeFocus && !SpectacleCore.videoMode && (!root.document || root.document.tool.isNoTool)
+        onActivated: SelectionEditor.cycleCandidate(true)
+    }
+    Shortcut {
+        sequence: "Ctrl+Shift+P"
+        enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty
+        onActivated: SpectacleCore.pinScreenshot()
+    }
+
     AnimatedLoader {
         id: annotationsLoader
         anchors.fill: parent
@@ -566,6 +597,13 @@ MouseArea {
                 spacing: parent.parent.spacing
                 ToolBarSizeLabel {}
                 ToolButton {
+                    visible: !SpectacleCore.videoMode
+                    icon.name: "edit-select"
+                    text: SelectionEditor.candidateLabel
+                    display: TtToolButton.IconOnly
+                    onClicked: SelectionEditor.cycleCandidate(false)
+                }
+                ToolButton {
                     display: TtToolButton.TextBesideIcon
                     visible: action.enabled
                     action: AcceptAction {}
@@ -593,8 +631,12 @@ MouseArea {
                  
                 ToolButton {
                     display: TtToolButton.IconOnly
-                    visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
+                    visible: !SpectacleCore.videoMode
                     action: OcrAction {}
+                }
+                ToolButton {
+                    display: TtToolButton.IconOnly
+                    action: PinAction { enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty }
                 }
                  
                 ExportMenuButton {
@@ -608,6 +650,13 @@ MouseArea {
                 spacing: parent.parent.spacing
                 ToolBarSizeLabel {}
                 ToolButton {
+                    visible: !SpectacleCore.videoMode
+                    icon.name: "edit-select"
+                    text: SelectionEditor.candidateLabel
+                    display: TtToolButton.IconOnly
+                    onClicked: SelectionEditor.cycleCandidate(false)
+                }
+                ToolButton {
                     visible: action.enabled
                     action: AcceptAction {}
                 }
@@ -629,8 +678,12 @@ MouseArea {
                 }
                  
                 ToolButton {
-                    visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
+                    visible: !SpectacleCore.videoMode
                     action: OcrAction {}
+                }
+                ToolButton {
+                    display: TtToolButton.IconOnly
+                    action: PinAction { enabled: !SpectacleCore.videoMode && !SelectionEditor.selection.empty }
                 }
                  
                 ExportMenuButton {

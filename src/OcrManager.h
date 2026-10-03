@@ -32,9 +32,10 @@ public:
 
 public Q_SLOTS:
     void processImage(const QImage &image, TessBaseAPI *tesseract, const TesseractRuntimeApi *runtimeApi);
+    void processMultilingualImage(const QImage &image);
 
 Q_SIGNALS:
-    void imageProcessed(const QString &text, bool success);
+    void imageProcessed(const QString &text, bool success, const QString &error = {});
 
 private:
     QMutex m_mutex;
@@ -54,7 +55,8 @@ public:
     enum class OcrStatus {
         Ready = 0,
         Processing = 1,
-        Error = 2
+        Error = 2,
+        Initializing = 3
     };
     Q_ENUM(OcrStatus)
 
@@ -92,6 +94,9 @@ public:
      * @return Current language code (e.g., "eng", "spa")
      */
     QString currentLanguageCode() const;
+    QString errorMessage() const;
+    QString engineName() const;
+    QStringList defaultLanguages() const;
     void setConfigSyncSuspended(bool suspended);
     bool isConfigSyncSuspended() const;
 
@@ -131,14 +136,13 @@ Q_SIGNALS:
     void statusChanged(OcrStatus status);
 
 private Q_SLOTS:
-    void handleRecognitionComplete(const QString &text, bool success);
+    void handleRecognitionComplete(const QString &text, bool success, const QString &error);
 
 private:
     void initializeTesseract();
     void setStatus(OcrStatus status);
     bool setupTesseractLanguages(const QStringList &langCodes);
     void setupAvailableLanguages(const QString &tessdataPath);
-    void loadSavedLanguageSetting();
     bool isLanguageAvailable(const QString &languageCode) const;
     QString tesseractLangName(const QString &tesseractCode) const;
 
@@ -148,7 +152,7 @@ private:
      * @return true if languages were successfully applied
      */
     bool validateAndApplyLanguages(const QStringList &languageCodes);
-    void beginRecognition(const QImage &image);
+    void beginRecognition(const QImage &image, bool multilingual = false);
 
     static OcrManager *s_instance;
 
@@ -156,7 +160,8 @@ private:
     const TesseractRuntimeApi *m_runtimeApi;
     OcrWorker *m_worker;
     std::unique_ptr<QThread> m_workerThread;
-    QTimer *m_timeoutTimer;
+    QString mTessdataPath;
+    QString mErrorMessage;
 
     OcrStatus m_status;
     QString m_currentLanguageCode;
@@ -166,7 +171,9 @@ private:
     QStringList m_availableLanguages;
     QMap<QString, QString> m_languageNames;
     bool m_configSyncSuspended = false;
+    QStringList mPendingLanguages;
     bool m_initialized;
+    bool mUsingMultilingual = false;
 
 private:
 };

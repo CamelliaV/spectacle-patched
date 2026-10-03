@@ -242,10 +242,6 @@ void ExportMenu::createOcrLanguageSubmenu()
 
     auto ocrManager = OcrManager::instance();
 
-    if (!ocrManager || !ocrManager->isAvailable()) {
-        return;
-    }
-
     m_ocrLanguageMenu = addMenu(i18nc("@action:menu", "Extract Text by Language"));
     m_ocrLanguageMenu->setIcon(QIcon::fromTheme(u"document-scan"_s));
 
@@ -308,6 +304,15 @@ void ExportMenu::buildOcrLanguageSubmenu()
     }
 
     setMenuEnabled(!busy);
+    auto automaticAction = m_ocrLanguageMenu->addAction(i18n("Chinese, English and Japanese (Automatic)"));
+    connect(automaticAction, &QAction::triggered, this, [this] {
+        triggerExtraction(QString());
+    });
+    auto combinedAction = m_ocrLanguageMenu->addAction(i18n("Configured Languages (%1)", ocrManager->currentLanguageCode()));
+    connect(combinedAction, &QAction::triggered, this, [this] {
+        triggerExtraction(OcrManager::instance()->currentLanguageCode());
+    });
+    m_ocrLanguageMenu->addSeparator();
 
     for (auto it = languages.cbegin(); it != languages.cend(); ++it) {
         const QString &code = it.key();

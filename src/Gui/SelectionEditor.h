@@ -32,6 +32,8 @@ class SelectionEditor : public QObject
     QML_ELEMENT
     QML_SINGLETON
 
+    Q_PROPERTY(bool detectingRegions READ detectingRegions NOTIFY candidatesChanged FINAL)
+    Q_PROPERTY(QString candidateLabel READ candidateLabel NOTIFY candidatesChanged FINAL)
     Q_PROPERTY(Selection *selection READ selection CONSTANT FINAL)
     Q_PROPERTY(qreal devicePixelRatio READ devicePixelRatio NOTIFY devicePixelRatioChanged FINAL)
     Q_PROPERTY(QRectF screensRect READ screensRect NOTIFY screensRectChanged FINAL)
@@ -83,6 +85,10 @@ public:
     Q_SLOT bool restoreLastSelectionRect();
 
     void reset();
+    void detectRegions(const QImage &image, const QRectF &canvasRect);
+    bool detectingRegions() const;
+    QString candidateLabel() const;
+    Q_INVOKABLE bool cycleCandidate(bool reverse = false);
 
     static SelectionEditor *create(QQmlEngine *engine, QJSEngine *)
     {
@@ -94,6 +100,7 @@ public:
     }
 
 Q_SIGNALS:
+    void candidatesChanged();
     void devicePixelRatioChanged();
     void screensRectChanged();
     void dragLocationChanged();

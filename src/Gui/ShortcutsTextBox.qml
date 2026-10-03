@@ -25,6 +25,10 @@ FloatingBackground {
             t += '\n'
             t += '\n' + i18n("Reset selection:")
         }
+        if (!SpectacleCore.videoMode) {
+            t += '\n' + i18n("Select suggested region:")
+            t += '\n' + i18n("Pin selected region:")
+        }
         t += '\n' + i18n("Cancel:")
         return t
     }
@@ -44,6 +48,10 @@ FloatingBackground {
             t += '\n' + i18nc("Keyboard action", "Arrow keys + Alt")
             t += '\n' + i18nc("Keyboard action", "+ Shift: Resize in 1 pixel steps")
             t += '\n' + i18nc("Mouse action", "Right-click")
+        }
+        if (!SpectacleCore.videoMode) {
+            t += '\n' + i18nc("Keyboard action", "Tab / Shift+Tab")
+            t += '\n' + i18nc("Keyboard action", "Ctrl+Shift+P")
         }
         t += '\n' + i18nc("Keyboard action", "Escape")
         return t

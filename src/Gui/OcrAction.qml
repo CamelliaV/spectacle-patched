@@ -9,9 +9,8 @@ import org.kde.spectacle.private
 
 T.Action {
     enabled: !SpectacleCore.videoMode && 
-             SpectacleCore.ocrAvailable && 
              SpectacleCore.ocrStatus !== 1
     icon.name: "document-scan"
-    text: i18nc("@action", "Extract Text")
+    text: SpectacleCore.ocrStatus === 1 ? i18nc("@action", "Extracting Text…") : i18nc("@action", "Extract Text")
     onTriggered: SpectacleCore.startOcrExtraction()
 }

@@ -1,0 +1,20 @@
+The multilingual OCR worker uses the following separately licensed components:
+
+RapidOCR 3.9.2
+  https://github.com/RapidAI/RapidOCR/tree/v3.9.2
+  Copyright (c) 2021 RapidOCR Authors. Apache-2.0.
+  The full license is included in LICENSE.RapidOCR.
+
+PP-OCRv5 detection, multilingual and English recognition, and text-line orientation models
+  https://github.com/PaddlePaddle/PaddleOCR
+  https://modelscope.cn/models/RapidAI/RapidOCR
+  PaddlePaddle and RapidOCR contributors. Apache-2.0.
+  The original models and their ONNX conversions remain subject to Apache-2.0.
+
+opencv-python-headless 4.12.0.88
+  https://github.com/opencv/opencv-python
+  Apache-2.0 and third-party notices supplied in vendor/cv2/LICENSE.txt
+  and vendor/cv2/LICENSE-3RD-PARTY.txt.
+
+PKGBUILD pins the wheel and model URLs and verifies their SHA-256 checksums.
+Recognition runs locally using installed assets; the worker does not download models.

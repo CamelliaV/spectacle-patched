@@ -63,8 +63,13 @@ EmptyPage {
              
             TtToolButton {
                 display: TtToolButton.IconOnly
-                visible: !SpectacleCore.videoMode && SpectacleCore.ocrAvailable
+                visible: !SpectacleCore.videoMode
                 action: OcrAction {}
+            }
+            TtToolButton {
+                display: TtToolButton.IconOnly
+                visible: !SpectacleCore.videoMode
+                action: PinAction {}
             }
              
             // We only show this in video mode to save space in screenshot mode

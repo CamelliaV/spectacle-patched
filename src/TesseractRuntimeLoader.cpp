@@ -90,6 +90,10 @@ bool TesseractRuntimeLoader::resolveSymbols()
         return true;
     };
 
+    if (!resolve(m_api.monitorCreate, "TessMonitorCreate") || !resolve(m_api.monitorDelete, "TessMonitorDelete")
+        || !resolve(m_api.monitorDeadline, "TessMonitorSetDeadlineMSecs")) {
+        return false;
+    }
     if (!resolve(m_api.create, "TessBaseAPICreate")) {
         return false;
     }
@@ -133,6 +137,9 @@ bool TesseractRuntimeLoader::resolveSymbols()
         return false;
     }
     if (!resolve(m_api.getAvailableLanguagesAsVector, "TessBaseAPIGetAvailableLanguagesAsVector")) {
+        return false;
+    }
+    if (!resolve(m_api.getLoadedLanguagesAsVector, "TessBaseAPIGetLoadedLanguagesAsVector")) {
         return false;
     }
     if (!resolve(m_api.deleteTextArray, "TessDeleteTextArray")) {

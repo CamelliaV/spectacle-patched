@@ -46,6 +46,7 @@ GeneralOptionsPage::GeneralOptionsPage(QWidget *parent)
             const bool busy = status == OcrManager::OcrStatus::Processing;
             m_ui->ocrLanguageLabel->setEnabled(!busy);
             m_ui->ocrLanguageScrollArea->setEnabled(!busy);
+            refreshOcrLanguageSettings(false);
         };
 
         connect(ocrManager, &OcrManager::statusChanged, this, updateProcessingUiState);

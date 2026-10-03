@@ -31,6 +31,13 @@ struct TesseractRuntimeApi {
     using VersionFunc = const char *(*)();
     using GetAvailableLanguagesAsVectorFunc = char **(*)(const TessBaseAPI *);
 
+    using MonitorCreateFunc = ETEXT_DESC *(*)();
+    using MonitorDeleteFunc = void (*)(ETEXT_DESC *);
+    using MonitorDeadlineFunc = void (*)(ETEXT_DESC *, int);
+
+    MonitorCreateFunc monitorCreate = nullptr;
+    MonitorDeleteFunc monitorDelete = nullptr;
+    MonitorDeadlineFunc monitorDeadline = nullptr;
     CreateFunc create = nullptr;
     DeleteFunc dispose = nullptr;
     Init3Func init3 = nullptr;
@@ -47,6 +54,7 @@ struct TesseractRuntimeApi {
     DeleteTextArrayFunc deleteTextArray = nullptr;
     VersionFunc version = nullptr;
     GetAvailableLanguagesAsVectorFunc getAvailableLanguagesAsVector = nullptr;
+    GetAvailableLanguagesAsVectorFunc getLoadedLanguagesAsVector = nullptr;
 };
 
 class TesseractRuntimeLoader

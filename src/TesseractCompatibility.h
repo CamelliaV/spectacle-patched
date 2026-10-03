@@ -13,6 +13,7 @@ using TessPageSegMode = tesseract::PageSegMode;
 using TessPageIteratorLevel = tesseract::PageIteratorLevel;
 
 static constexpr auto PSM_AUTO = tesseract::PSM_AUTO;
+static constexpr auto PSM_SPARSE_TEXT = tesseract::PSM_SPARSE_TEXT;
 static constexpr auto RIL_TEXTLINE = tesseract::RIL_TEXTLINE;
 
 #else

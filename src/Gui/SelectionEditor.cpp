@@ -9,6 +9,8 @@
 #include "CaptureWindow.h"
 #include "DebugUtils.h"
 #include "Geometry.h"
+#include "MultilingualOcr.h"
+#include "RegionDetector.h"
 #include "Selection.h"
 #include "SelectionRectUtils.h"
 #include "settings.h"
@@ -16,6 +18,7 @@
 #include <KLocalizedString>
 #include <KWindowSystem>
 
+#include <QFutureWatcher>
 #include <QGuiApplication>
 #include <QMouseEvent>
 #include <QPainter>
@@ -25,6 +28,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QScreen>
+#include <QtConcurrentRun>
 #include <QtMath>
 #include <qnamespace.h>
 
@@ -124,6 +128,16 @@ public:
 
     const std::unique_ptr<Selection> selection;
 
+    QList<QRectF> detectedRegions;
+    QList<QRectF> screenRegions;
+    QList<QRectF> candidates;
+    int candidateIndex = -1;
+    quint64 detectionGeneration = 0;
+    bool detecting = false;
+    int mPendingDetections = 0;
+    RegionDetector::Detection mFastRegions;
+    QList<QRectF> mTextRegions;
+    QPointF candidateAnchor;
     QPointF startPos;
     QPointF initialTopLeft;
     Location dragLocation = Location::None;
@@ -458,6 +472,8 @@ bool SelectionEditor::restoreLastSelectionRect()
     }
 
     d->selection->setRect(rect);
+    d->candidateIndex = -1;
+    Q_EMIT candidatesChanged();
     return true;
 }
 
@@ -475,10 +491,17 @@ void SelectionEditor::reset()
         Q_EMIT devicePixelRatioChanged();
     }
 
+    d->screenRegions.clear();
+    d->candidateIndex = -1;
+    d->candidates.clear();
+    d->mousePos = G::mapFromPlatformPoint(QCursor::pos(), dpr);
     QRectF rect;
     for (auto window : windows) {
-        rect |= Geometry::mapFromPlatformRect(window->geometry(), dpr);
+        const auto screenRect = Geometry::mapFromPlatformRect(window->geometry(), window->devicePixelRatio());
+        d->screenRegions.append(screenRect);
+        rect |= screenRect;
     }
+    Q_EMIT candidatesChanged();
     if (d->screensRect != rect) {
         d->screensRect = rect;
         Q_EMIT screensRectChanged();
@@ -494,6 +517,126 @@ void SelectionEditor::reset()
         }
         d->selection->setRect(selectionRect);
     }
+}
+
+void SelectionEditor::detectRegions(const QImage &image, const QRectF &canvasRect)
+{
+    const auto generation = ++d->detectionGeneration;
+    d->detectedRegions.clear();
+    d->mFastRegions = {};
+    d->mTextRegions.clear();
+    d->candidates.clear();
+    d->candidateIndex = -1;
+    d->detecting = !image.isNull();
+    const bool useTextDetection = !image.isNull() && MultilingualOcr::isAvailable();
+    d->mPendingDetections = image.isNull() ? 0 : useTextDetection ? 2 : 1;
+    Q_EMIT candidatesChanged();
+    if (image.isNull()) {
+        return;
+    }
+    QList<QRectF> viewports;
+    for (auto screen : QGuiApplication::screens()) {
+        viewports.append(G::mapFromPlatformRect(screen->geometry(), screen->devicePixelRatio()).intersected(canvasRect));
+    }
+    // Fast image contours become usable immediately; text detection fills in
+    // borderless paragraphs/code blocks without blocking the capture overlay.
+    const auto finish = [this, generation](const RegionDetector::Detection &fastRegions, const QList<QRectF> &textRegions, bool textReady) {
+        if (generation != d->detectionGeneration) {
+            return;
+        }
+        if (textReady) {
+            d->mTextRegions = textRegions;
+        } else {
+            d->mFastRegions = fastRegions;
+        }
+        d->detectedRegions = d->mFastRegions.panels;
+        for (const auto &rough : d->mFastRegions.contents) {
+            const bool coveredByText = std::any_of(d->mTextRegions.cbegin(), d->mTextRegions.cend(), [&rough](const QRectF &text) {
+                const auto overlap = rough.intersected(text);
+                return overlap.width() * overlap.height() >= rough.width() * rough.height() * 0.4;
+            });
+            if (!coveredByText) {
+                d->detectedRegions.append(rough);
+            }
+        }
+        d->detectedRegions.append(d->mTextRegions);
+        d->detecting = --d->mPendingDetections > 0;
+        if (d->candidateIndex >= 0) {
+            auto available = d->detectedRegions;
+            available.append(d->screenRegions);
+            const auto selected = d->selection->rectF();
+            d->candidates = RegionDetector::candidatesAt(available, d->candidateAnchor, selected);
+            d->candidateIndex = d->candidates.indexOf(selected);
+        }
+        Q_EMIT candidatesChanged();
+    };
+    auto fast = new QFutureWatcher<RegionDetector::Detection>(this);
+    connect(fast, &QFutureWatcherBase::finished, this, [fast, finish] {
+        finish(fast->result(), {}, false);
+        fast->deleteLater();
+    });
+    fast->setFuture(QtConcurrent::run([image, canvasRect, viewports] {
+        try {
+            return RegionDetector::detectDetailed(image, canvasRect, viewports);
+        } catch (const std::exception &error) {
+            qWarning() << "Region detection failed:" << error.what();
+            return RegionDetector::Detection{};
+        }
+    }));
+    if (useTextDetection) {
+        auto text = new QFutureWatcher<MultilingualOcr::RegionResult>(this);
+        connect(text, &QFutureWatcherBase::finished, this, [text, finish] {
+            const auto result = text->result();
+            if (!result.success && !result.error.isEmpty()) {
+                qWarning() << result.error;
+            }
+            finish({}, result.regions, true);
+            text->deleteLater();
+        });
+        text->setFuture(QtConcurrent::run([image, canvasRect, viewports] {
+            return MultilingualOcr::detectTextRegions(image, canvasRect, viewports);
+        }));
+    }
+}
+
+bool SelectionEditor::detectingRegions() const
+{
+    return d->detecting;
+}
+
+QString SelectionEditor::candidateLabel() const
+{
+    if (d->candidateIndex >= 0) {
+        const auto label = i18n("Region %1 of %2 · Tab / Shift+Tab", d->candidateIndex + 1, d->candidates.size());
+        return d->detecting ? label + i18n(" (finding more…)") : label;
+    }
+    if (d->detecting) {
+        return i18n("Finding content regions… · Tab to select available regions");
+    }
+    return i18n("Tab: Select a region under the pointer");
+}
+
+bool SelectionEditor::cycleCandidate(bool reverse)
+{
+    if (d->disableArrowKeys) {
+        return false;
+    }
+    if (d->candidateIndex < 0 || (d->mousePos - d->candidateAnchor).manhattanLength() > 8) {
+        d->candidateAnchor = d->mousePos;
+        auto regions = d->detectedRegions;
+        regions.append(d->screenRegions);
+        d->candidates = RegionDetector::candidatesAt(regions, d->candidateAnchor);
+        d->candidateIndex = reverse ? 0 : -1;
+    }
+    if (d->candidates.isEmpty()) {
+        d->candidateIndex = -1;
+        Q_EMIT candidatesChanged();
+        return false;
+    }
+    d->candidateIndex = (d->candidateIndex + (reverse ? -1 : 1) + d->candidates.size()) % d->candidates.size();
+    d->selection->setRect(d->candidates.at(d->candidateIndex));
+    Q_EMIT candidatesChanged();
+    return true;
 }
 
 bool SelectionEditor::eventFilter(QObject *watched, QEvent *event)
@@ -546,6 +689,8 @@ void SelectionEditor::keyPressEvent(QQuickItem *item, QKeyEvent *event)
     case Qt::Key_Right:
     case Qt::Key_Down:
     case Qt::Key_Left:
+        d->candidateIndex = -1;
+        Q_EMIT candidatesChanged();
         d->handleArrowKey(event);
         d->setShowMagnifier(event->modifiers().testFlag(Qt::ShiftModifier));
         event->accept();
@@ -611,6 +756,8 @@ void SelectionEditor::mousePressEvent(QQuickItem *item, QMouseEvent *event)
     }
 
     if (event->button() & (Qt::LeftButton | Qt::RightButton)) {
+        d->candidateIndex = -1;
+        Q_EMIT candidatesChanged();
         if (event->button() & Qt::RightButton) {
             d->selection->setRect({});
         }

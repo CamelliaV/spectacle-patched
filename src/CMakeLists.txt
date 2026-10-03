@@ -26,8 +26,13 @@ target_sources(spectacle PRIVATE
     ExportManager.cpp
     Geometry.cpp
     OcrManager.cpp
+    OcrUtils.cpp
+    MultilingualOcr.cpp
     TesseractRuntimeLoader.cpp
     Gui/CaptureWindow.cpp
+    Gui/OcrResultDialog.cpp
+    Gui/PinnedImageWindow.cpp
+    Gui/RegionDetector.cpp
     Gui/ExportMenu.cpp
     Gui/HelpMenu.cpp
     Gui/InlineMessageModel.cpp
@@ -175,6 +180,7 @@ qt_target_qml_sources(spectacle
     Gui/Magnifier.qml
     Gui/NewScreenshotToolButton.qml
     Gui/OcrAction.qml
+    Gui/PinAction.qml
     Gui/OptionsMenuButton.qml
     Gui/Outline.qml
     Gui/QmlUtils.qml
@@ -197,3 +203,5 @@ qt_target_qml_sources(spectacle
 )
 
 install(TARGETS spectacle ${KDE_INSTALL_TARGETS_DEFAULT_ARGS})
+
+install(FILES Ocr/recognize.py Ocr/LICENSE.RapidOCR Ocr/THIRD_PARTY_NOTICES DESTINATION ${KDE_INSTALL_DATADIR}/spectacle/ocr)

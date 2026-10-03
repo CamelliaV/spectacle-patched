@@ -12,17 +12,19 @@
 #include "ExportManager.h"
 #include "Geometry.h"
 #include "Gui/CaptureWindow.h"
+#include "Gui/InlineMessageModel.h"
+#include "Gui/OcrResultDialog.h"
+#include "Gui/PinnedImageWindow.h"
 #include "Gui/Selection.h"
 #include "Gui/SelectionEditor.h"
 #include "Gui/SpectacleWindow.h"
-#include "Gui/InlineMessageModel.h"
 #include "ImageMetaData.h"
 #include "OcrManager.h"
+#include "PlasmaVersion.h"
 #include "Platforms/ImagePlatformXcb.h"
 #include "Platforms/PlatformLoader.h"
 #include "RecordingModeModel.h"
 #include "ShortcutActions.h"
-#include "PlasmaVersion.h"
 // generated
 #include "settings.h"
 
@@ -234,19 +236,26 @@ SpectacleCore::SpectacleCore(QObject *parent)
             static const auto rectKey = u"rect"_s;
             m_videoPlatform->startRecording(output, VideoPlatform::Region, {{rectKey, rect}}, includePointer);
         } else {
+            // OCR and pinning consume the selected image without triggering
+            // ordinary auto-export, which can quit the application prematurely.
+            if (mPinExportInProgress || m_ocrExportInProgress) {
+                m_annotationDocument->cropCanvas(rect);
+                syncExportImage();
+                if (mPinExportInProgress) {
+                    mPinExportInProgress = false;
+                    new PinnedImageWindow(m_annotationDocument->renderToImage(), rect.topLeft().toPoint(), QGuiApplication::screenAt(rect.center().toPoint()));
+                } else {
+                    m_ocrExportInProgress = false;
+                    performOcrExtraction(mPendingOcrLanguage);
+                }
+                deleteWindows();
+                return;
+            }
             SpectacleWindow::setVisibilityForAll(QWindow::Hidden);
             deleteWindows();
             m_annotationDocument->cropCanvas(rect);
             syncExportImage();
             auto exportActions = actions & ExportManager::AnyAction ? actions : autoExportActions();
-            if (m_ocrExportInProgress) {
-                if (Settings::closeAfterOcr()) {
-                    exportActions.setFlag(ExportManager::Action::Save, false);
-                    exportActions.setFlag(ExportManager::Action::CopyPath, false);
-                    m_quitAfterOcr = true;
-                }
-                m_ocrExportInProgress = false;
-            }
             const bool willQuit = exportActions.testFlag(ExportManager::AnyAction) //
                 && exportActions.testFlag(ExportManager::UserAction) //
                 && Settings::quitAfterSaveCopyExport();
@@ -276,6 +285,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
         setVideoMode(false);
         m_annotationDocument->clearAnnotations();
         m_annotationDocument->setBaseImage(image);
+        SelectionEditor::instance()->detectRegions(image, m_annotationDocument->canvasRect());
         setExportImage(image);
         ExportManager::instance()->updateTimestamp();
         initCaptureWindows(CaptureWindow::Image);
@@ -627,13 +637,28 @@ SpectacleCore::SpectacleCore(QObject *parent)
     connect(exportManager, &ExportManager::qrCodeScanned, this, onQRCodeScanned);
 
     auto onOcrTextRecognized = [this](const QString &text, const QStringList &languageCodes, bool success) {
+        const auto message = !success ? OcrManager::instance()->errorMessage()
+            : text.isEmpty() ? i18n("No text found. Try a tighter region and check the selected OCR languages.")
+                             : i18n("Text copied to clipboard. %1 · Languages: %2", OcrManager::instance()->engineName(), languageCodes.join(u" + "_s));
+        if (!mOcrResultDialog && (!success || text.isEmpty() || !Settings::closeAfterOcr())) {
+            mOcrResultDialog = createOcrResultDialog();
+        }
+        if (mOcrResultDialog) {
+            mOcrResultDialog->setResult(text, message);
+            mOcrResultDialog->show();
+            mOcrResultDialog->raise();
+        }
         if (!success) {
+            mOcrLoopLocker.reset();
+            m_quitAfterOcr = false;
             InlineMessageModel::instance()->push(InlineMessageModel::Error, 
                 i18nc("@info", "Text extraction failed"));
             return;
         }
         
         if (text.isEmpty()) {
+            mOcrLoopLocker.reset();
+            m_quitAfterOcr = false;
             InlineMessageModel::instance()->push(InlineMessageModel::Copied, 
                 i18nc("@info", "No text found in the image"));
             return;
@@ -719,6 +744,7 @@ SpectacleCore::SpectacleCore(QObject *parent)
         QTimer::singleShot(180000, notification, onExpired);
 
         notification->sendEvent();
+        mOcrLoopLocker.reset();
 
         if (m_quitAfterOcr) {
             m_quitAfterOcr = false;
@@ -855,61 +881,94 @@ QVariantMap SpectacleCore::ocrAvailableLanguages() const
     return result;
 }
 
-bool SpectacleCore::startOcrExtraction(const QString &languageCode)
+bool SpectacleCore::pinScreenshot()
 {
-    if (m_videoMode) {
+    if (m_videoMode || mPinExportInProgress || m_ocrExportInProgress) {
         return false;
     }
-
-    const bool hasCaptureWindows = !CaptureWindow::instances().isEmpty();
-
-    if (hasCaptureWindows) {
-        auto selectionEditor = SelectionEditor::instance();
-        auto inlineMessages = InlineMessageModel::instance();
-
-        m_ocrExportInProgress = true;
-        if (!selectionEditor->acceptSelection(ExportManager::UserAction)) {
-            m_ocrExportInProgress = false;
-            inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "Please select a region before extracting text"));
+    if (!CaptureWindow::instances().isEmpty()) {
+        if (SelectionEditor::instance()->selection()->isEmpty()) {
             return false;
         }
-
-        QMetaObject::invokeMethod(
-            this,
-            [this, languageCode]() {
-                performOcrExtraction(languageCode);
-            },
-            Qt::QueuedConnection);
+        mPinExportInProgress = true;
+        if (!SelectionEditor::instance()->acceptSelection(ExportManager::UserAction)) {
+            mPinExportInProgress = false;
+            return false;
+        }
         return true;
     }
+    const auto image = m_annotationDocument->renderToImage();
+    if (image.isNull()) {
+        return false;
+    }
+    const auto rect = m_annotationDocument->canvasRect();
+    new PinnedImageWindow(image, rect.topLeft().toPoint(), QGuiApplication::screenAt(rect.center().toPoint()));
+    return true;
+}
 
+bool SpectacleCore::startOcrExtraction(const QString &languageCode)
+{
+    auto manager = OcrManager::instance();
+    if (m_videoMode || m_ocrExportInProgress || mPinExportInProgress || manager->status() == OcrManager::OcrStatus::Processing) {
+        return false;
+    }
+    if (!manager->isAvailable()) {
+        if (!mOcrResultDialog) {
+            mOcrResultDialog = createOcrResultDialog();
+        }
+        mOcrResultDialog->setResult({}, manager->errorMessage().isEmpty() ? i18n("OCR engine is initializing…") : manager->errorMessage());
+        mOcrResultDialog->show();
+        return false;
+    }
+    mOcrLoopLocker = std::make_unique<QEventLoopLocker>();
+    if (!CaptureWindow::instances().isEmpty()) {
+        mPendingOcrLanguage = languageCode;
+        m_ocrExportInProgress = true;
+        if (!SelectionEditor::instance()->acceptSelection(ExportManager::UserAction)) {
+            m_ocrExportInProgress = false;
+            mOcrLoopLocker.reset();
+            return false;
+        }
+        return true;
+    }
     return performOcrExtraction(languageCode);
 }
 
-bool SpectacleCore::performOcrExtraction(const QString &languageCode)
+OcrResultDialog *SpectacleCore::createOcrResultDialog()
 {
-    auto ocrManager = OcrManager::instance();
-    auto inlineMessages = InlineMessageModel::instance();
+    auto dialog = new OcrResultDialog;
+    connect(dialog, &OcrResultDialog::recognitionRequested, this, [this](const QImage &image, const QString &languages) {
+        if (OcrManager::instance()->status() != OcrManager::OcrStatus::Processing) {
+            performOcrExtraction(languages, image);
+        }
+    });
+    return dialog;
+}
 
-    if (!ocrManager->isAvailable()) {
-        inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "OCR is not available."));
-        return false;
-    }
-
-    const QImage image = m_annotationDocument->renderToImage();
+bool SpectacleCore::performOcrExtraction(const QString &languageCode, const QImage &sourceImage)
+{
+    const QImage image = sourceImage.isNull() ? m_annotationDocument->renderToImage() : sourceImage;
     if (image.isNull()) {
-        inlineMessages->push(InlineMessageModel::Error, i18nc("@info", "No screenshot available."));
+        mOcrLoopLocker.reset();
         return false;
     }
-
-    inlineMessages->push(InlineMessageModel::Copied, i18nc("@info", "Extracting text from image..."));
-
-    if (languageCode.isEmpty()) {
-        ocrManager->recognizeText(image);
-    } else {
-        ocrManager->recognizeTextWithLanguage(image, languageCode);
+    mOcrLoopLocker = std::make_unique<QEventLoopLocker>();
+    if (!Settings::closeAfterOcr() || mOcrResultDialog) {
+        if (!mOcrResultDialog) {
+            mOcrResultDialog = createOcrResultDialog();
+        }
+        mOcrResultDialog->setSourceImage(image, languageCode);
+        mOcrResultDialog->setResult({}, i18n("Extracting text…"));
+        mOcrResultDialog->setBusy(true);
+        mOcrResultDialog->show();
     }
-
+    auto manager = OcrManager::instance();
+    m_quitAfterOcr = Settings::closeAfterOcr();
+    if (languageCode.isEmpty()) {
+        manager->recognizeText(image);
+    } else {
+        manager->recognizeTextWithLanguage(image, languageCode);
+    }
     return true;
 }
 

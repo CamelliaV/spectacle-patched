@@ -12,6 +12,7 @@
 #include <KLocalizedString>
 
 #include <QCheckBox>
+#include <QLabel>
 #include <QSignalBlocker>
 #include <QVBoxLayout>
 
@@ -65,26 +66,21 @@ void OcrLanguageSelector::setSelectedLanguages(const QStringList &languages)
 
 bool OcrLanguageSelector::isDefault() const
 {
-    const QStringList current = selectedLanguages();
-
-    // Default state is exactly one language selected
-    if (current.size() != 1) {
-        return false;
-    }
-
-    QCheckBox *defaultCheckbox = findDefaultCheckbox();
-
-    if (defaultCheckbox) {
-        QString defaultLangCode = defaultCheckbox->property("languageCode").toString();
-        return current.contains(defaultLangCode);
-    }
-
-    return false;
+    auto current = selectedLanguages();
+    auto defaults = m_ocrManager->defaultLanguages();
+    current.sort();
+    defaults.sort();
+    return current == defaults;
 }
 
 bool OcrLanguageSelector::hasChanges() const
 {
-    return selectedLanguages() != Settings::ocrLanguages();
+    auto selected = selectedLanguages();
+    auto configured = Settings::ocrLanguages();
+    configured.removeAll(u"osd"_s);
+    selected.sort();
+    configured.sort();
+    return selected != configured;
 }
 
 void OcrLanguageSelector::applyDefaults()
@@ -98,24 +94,9 @@ void OcrLanguageSelector::applyDefaults()
         return;
     }
 
-    QSignalBlocker blocker(this);
-
-    QCheckBox *defaultCheckbox = findDefaultCheckbox();
-
-    for (QCheckBox *checkbox : m_languageCheckboxes) {
-        QSignalBlocker checkboxBlocker(checkbox);
-        checkbox->setChecked(checkbox == defaultCheckbox);
-    }
-
-    const int selectedCount = defaultCheckbox ? 1 : 0;
-    updateCheckboxEnabledStates(selectedCount);
-
-    QStringList selected;
-    if (defaultCheckbox) {
-        selected.append(defaultCheckbox->property("languageCode").toString());
-    }
-
-    Q_EMIT selectedLanguagesChanged(selected);
+    const auto defaults = m_ocrManager->defaultLanguages();
+    setSelectedLanguages(defaults);
+    Q_EMIT selectedLanguagesChanged(selectedLanguages());
 }
 
 void OcrLanguageSelector::refresh()
@@ -212,6 +193,11 @@ void OcrLanguageSelector::setupLanguageCheckboxes()
         return;
     }
 
+    auto description =
+        new QLabel(i18n("The toolbar recognizes Chinese, English and Japanese automatically. These language settings apply to manual Tesseract recognition."),
+                   this);
+    description->setWordWrap(true);
+    m_layout->addWidget(description);
     const QMap<QString, QString> availableLanguages = m_ocrManager->availableLanguagesWithNames();
 
     if (availableLanguages.isEmpty()) {
@@ -232,6 +218,17 @@ void OcrLanguageSelector::setupLanguageCheckboxes()
         m_languageCheckboxes.append(checkbox);
     }
 
+    QStringList missing;
+    for (const auto &code : {u"eng"_s, u"chi_sim"_s, u"jpn"_s}) {
+        if (!availableLanguages.contains(code)) {
+            missing.append(code);
+        }
+    }
+    if (!missing.isEmpty()) {
+        auto hint = new QLabel(i18n("For Chinese, English, and Japanese recognition, install the missing language packs: %1", missing.join(u", "_s)), this);
+        hint->setWordWrap(true);
+        m_layout->addWidget(hint);
+    }
     if (m_layout->count() > 0) {
         m_layout->addStretch();
     }
